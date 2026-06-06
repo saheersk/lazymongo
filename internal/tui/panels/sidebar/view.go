@@ -3,8 +3,6 @@ package sidebar
 import (
 	"fmt"
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -34,59 +32,81 @@ func (m Model) renderInner() string {
 		Width(m.width - 4).
 		Render("DATABASES")
 
+	// Bottom bar: search input when active, key hints otherwise.
+	bottomBar := m.renderBottomBar()
+
+	// innerH = rows inside the border; used to pin bottomBar to the absolute bottom.
+	innerH := m.height - 2
+	if innerH < 3 {
+		innerH = 3
+	}
+
 	if m.loading {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			header,
-			"",
-			"  "+m.spinner.View()+" loading…",
-		)
+		rows := []string{header, "", "  " + m.spinner.View() + " loading…"}
+		rows = m.padToBottom(rows, innerH, bottomBar)
+		return strings.Join(rows, "\n")
 	}
 
 	if m.err != nil {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			header,
-			"",
-			m.th.ErrText.Render("  "+m.err.Error()),
-		)
+		rows := []string{header, "", m.th.ErrText.Render("  " + m.err.Error())}
+		rows = m.padToBottom(rows, innerH, bottomBar)
+		return strings.Join(rows, "\n")
 	}
 
-	if len(m.items) == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			header,
-			"",
-			m.th.DimText.Render("  no databases found"),
-		)
+	visible := m.visibleItems()
+
+	if len(visible) == 0 {
+		empty := "  no databases found"
+		if m.searchMode && m.searchInput.Value() != "" {
+			empty = "  no results"
+		}
+		rows := []string{header, "", m.th.DimText.Render(empty)}
+		rows = m.padToBottom(rows, innerH, bottomBar)
+		return strings.Join(rows, "\n")
 	}
 
-	// how many rows fit inside the border
-	visibleRows := m.height - 4 // 2 border + 1 header + 1 blank
+	// Rows available for items: innerH − header(1) − blank(1) − bottomBar(1)
+	visibleRows := innerH - 3
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
 
-	// viewport: keep cursor visible
-	start, end := m.viewportWindow(visibleRows)
+	start, end := viewportWindow(m.cursor, len(visible), visibleRows)
 
 	var rows []string
 	rows = append(rows, header, "")
-
 	for i := start; i < end; i++ {
-		rows = append(rows, m.renderItem(i))
+		rows = append(rows, m.renderVisibleItem(i, visible))
 	}
 
-	// scroll indicator
-	if len(m.items) > visibleRows {
-		pct := int(float64(m.cursor) / float64(len(m.items)-1) * 100)
-		rows = append(rows, m.th.DimText.Render(fmt.Sprintf("  %d%%", pct)))
-	}
-
+	rows = m.padToBottom(rows, innerH, bottomBar)
 	return strings.Join(rows, "\n")
 }
 
-func (m Model) renderItem(idx int) string {
-	it := m.items[idx]
-	isCursor := idx == m.cursor
+// renderBottomBar returns a search input line when searching, or a hint line otherwise.
+func (m Model) renderBottomBar() string {
+	if m.searchMode {
+		prompt := m.th.StatusFilter.Render("/ ")
+		return "  " + prompt + m.searchInput.View()
+	}
+	k := func(s string) string { return m.th.HelpKey.Render(s) }
+	d := func(s string) string { return m.th.HelpDesc.Render(s) }
+	return "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help")
+}
 
+// padToBottom pads rows with blank lines then appends bottomBar so it is
+// pinned to the absolute bottom of the inner panel area (lazygit style).
+func (m Model) padToBottom(rows []string, innerH int, bottomBar string) []string {
+	filler := innerH - len(rows) - 1 // -1 reserves the last row for bottomBar
+	for i := 0; i < filler; i++ {
+		rows = append(rows, "")
+	}
+	return append(rows, bottomBar)
+}
+
+func (m Model) renderVisibleItem(idx int, visible []treeItem) string {
+	it := visible[idx]
+	isCursor := idx == m.cursor
 	maxW := m.width - 6
 
 	var line string
@@ -98,7 +118,6 @@ func (m Model) renderItem(idx int) string {
 		}
 		label := fmt.Sprintf("%s %s", arrow, it.name)
 		line = truncate(label, maxW)
-
 		if isCursor {
 			line = m.th.CursorItem.Render(line)
 		} else {
@@ -108,7 +127,6 @@ func (m Model) renderItem(idx int) string {
 	case kindCollection:
 		label := indent + bullet + " " + it.name
 		line = truncate(label, maxW)
-
 		if isCursor {
 			line = m.th.CursorItem.PaddingLeft(0).Render(line)
 		} else {
@@ -119,20 +137,18 @@ func (m Model) renderItem(idx int) string {
 	return "  " + line
 }
 
-// viewportWindow returns start/end indices to keep cursor visible.
-func (m Model) viewportWindow(rows int) (int, int) {
+func viewportWindow(cursor, total, rows int) (int, int) {
 	start := 0
-	end := len(m.items)
+	end := total
 	if end > rows {
 		end = rows
 	}
-
-	if m.cursor >= end {
-		start = m.cursor - rows + 1
-		end = m.cursor + 1
+	if cursor >= end {
+		start = cursor - rows + 1
+		end = cursor + 1
 	}
-	if end > len(m.items) {
-		end = len(m.items)
+	if end > total {
+		end = total
 	}
 	return start, end
 }

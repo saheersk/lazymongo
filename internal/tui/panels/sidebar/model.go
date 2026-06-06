@@ -2,7 +2,10 @@
 package sidebar
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/saheersk/lazymongo/internal/tui/keymap"
 	"github.com/saheersk/lazymongo/internal/tui/msg"
@@ -34,8 +37,12 @@ type FetchCollectionsFn func(db string) tea.Cmd
 // Model is the bubbletea model for the sidebar panel.
 type Model struct {
 	// flat list rebuilt whenever expand/collapse state changes
-	items  []treeItem
-	cursor int
+	items   []treeItem
+	allCols map[string][]treeItem // all loaded collections by db name (for search)
+	cursor  int
+
+	searchMode  bool
+	searchInput textinput.Model
 
 	focused bool
 	loading bool
@@ -52,6 +59,93 @@ type Model struct {
 	km      *keymap.Map
 }
 
+// InSearchMode reports whether the search bar is active.
+func (m Model) InSearchMode() bool { return m.searchMode }
+
+// visibleItems returns the filtered item list when searching, or all items.
+//
+// Search syntax:
+//   - "orders"       → match any DB or collection containing "orders"
+//   - "mydb:orders"  → match DBs containing "mydb", then collections containing "orders"
+//   - "mydb:"        → match DBs containing "mydb", show all their collections
+//   - ":orders"      → any DB, only collections containing "orders"
+func (m Model) visibleItems() []treeItem {
+	raw := strings.TrimSpace(m.searchInput.Value())
+	if !m.searchMode || raw == "" {
+		return m.items
+	}
+
+	if idx := strings.Index(raw, ":"); idx >= 0 {
+		dbQ := strings.ToLower(raw[:idx])
+		colQ := strings.ToLower(raw[idx+1:])
+		return m.filterColon(dbQ, colQ)
+	}
+
+	return m.filterBoth(strings.ToLower(raw))
+}
+
+// filterBoth matches the query against both DB names and collection names.
+func (m Model) filterBoth(q string) []treeItem {
+	var result []treeItem
+	seen := map[string]bool{}
+
+	for _, it := range m.items {
+		if it.kind != kindDatabase || seen[it.name] {
+			continue
+		}
+		dbMatch := strings.Contains(strings.ToLower(it.name), q)
+		cols := m.allCols[it.name]
+
+		var matchCols []treeItem
+		for _, c := range cols {
+			if strings.Contains(strings.ToLower(c.name), q) {
+				matchCols = append(matchCols, c)
+			}
+		}
+
+		if !dbMatch && len(matchCols) == 0 {
+			continue
+		}
+		seen[it.name] = true
+		result = append(result, it)
+		if dbMatch {
+			result = append(result, cols...)
+		} else {
+			result = append(result, matchCols...)
+		}
+	}
+	return result
+}
+
+// filterColon handles "dbQuery:colQuery" syntax.
+func (m Model) filterColon(dbQ, colQ string) []treeItem {
+	var result []treeItem
+	seen := map[string]bool{}
+
+	for _, it := range m.items {
+		if it.kind != kindDatabase || seen[it.name] {
+			continue
+		}
+		// DB must match dbQ (empty dbQ matches all DBs)
+		if dbQ != "" && !strings.Contains(strings.ToLower(it.name), dbQ) {
+			continue
+		}
+		cols := m.allCols[it.name]
+
+		var matchCols []treeItem
+		for _, c := range cols {
+			if colQ == "" || strings.Contains(strings.ToLower(c.name), colQ) {
+				matchCols = append(matchCols, c)
+			}
+		}
+
+		seen[it.name] = true
+		result = append(result, it)
+		result = append(result, matchCols...)
+	}
+	return result
+}
+
 // New returns an initialised sidebar model.
 // It begins in a loading state; Init() fires the database fetch.
 func New(
@@ -63,13 +157,19 @@ func New(
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
+	ti := textinput.New()
+	ti.Placeholder = "search db / collection…"
+	ti.CharLimit = 60
+
 	return Model{
-		loading:   true,
-		fetchDBs:  fetchDBs,
-		fetchCols: fetchCols,
-		spinner:   sp,
-		th:        th,
-		km:        km,
+		loading:     true,
+		fetchDBs:    fetchDBs,
+		fetchCols:   fetchCols,
+		spinner:     sp,
+		searchInput: ti,
+		allCols:     map[string][]treeItem{},
+		th:          th,
+		km:          km,
 	}
 }
 
@@ -82,6 +182,7 @@ func (m Model) Init() tea.Cmd {
 func (m Model) SetSize(w, h int) Model {
 	m.width = w
 	m.height = h
+	m.searchInput.Width = max(4, w-8)
 	return m
 }
 
@@ -162,32 +263,20 @@ func (m *Model) applyDatabases(dbs []msg.DatabaseInfo) {
 	m.items = flat
 }
 
-// applyCollections merges a fetched collection list into the existing items.
+// applyCollections stores a fetched collection list in allCols and marks the
+// database as loaded. rebuildFlat is called by the Update caller afterwards.
 func (m *Model) applyCollections(dbName string, cols []msg.CollectionInfo) {
-	// Build new flat list: keep everything, but replace the collections block
-	// for this specific database.
-	var fresh []treeItem
-	for _, it := range m.items {
-		if it.kind == kindCollection && it.db == dbName {
-			continue // will be re-inserted below
-		}
-		if it.kind == kindDatabase && it.name == dbName {
-			it.colsLoaded = true
-			fresh = append(fresh, it)
-			if it.expanded {
-				for _, c := range cols {
-					fresh = append(fresh, treeItem{
-						kind: kindCollection,
-						name: c.Name,
-						db:   dbName,
-					})
-				}
-			}
-			continue
-		}
-		fresh = append(fresh, it)
+	loaded := make([]treeItem, 0, len(cols))
+	for _, c := range cols {
+		loaded = append(loaded, treeItem{kind: kindCollection, name: c.Name, db: dbName})
 	}
-	m.items = fresh
+	m.allCols[dbName] = loaded
+	for i, it := range m.items {
+		if it.kind == kindDatabase && it.name == dbName {
+			m.items[i].colsLoaded = true
+			break
+		}
+	}
 }
 
 // toggleExpand expands or collapses the database at position idx.
@@ -210,26 +299,21 @@ func (m Model) toggleExpand(idx int) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// rebuildFlat reconstructs items[] from scratch using the stored expansion state.
+// rebuildFlat reconstructs items[] using allCols as the source of collections.
+// This ensures that pre-fetched (but not yet expanded) databases show their
+// collections correctly when expanded.
 func (m Model) rebuildFlat() Model {
-	// First pass: gather databases and their collections separately
 	var dbs []treeItem
-	colsByDB := map[string][]treeItem{}
-
 	for _, it := range m.items {
-		switch it.kind {
-		case kindDatabase:
+		if it.kind == kindDatabase {
 			dbs = append(dbs, it)
-		case kindCollection:
-			colsByDB[it.db] = append(colsByDB[it.db], it)
 		}
 	}
-
 	var flat []treeItem
 	for _, db := range dbs {
 		flat = append(flat, db)
 		if db.expanded {
-			flat = append(flat, colsByDB[db.name]...)
+			flat = append(flat, m.allCols[db.name]...)
 		}
 	}
 	m.items = flat

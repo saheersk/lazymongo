@@ -4,7 +4,9 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
+	xansi "github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/saheersk/lazymongo/internal/mongo"
@@ -41,6 +43,7 @@ type App struct {
 	focus         focusedPanel
 	showDetail    bool
 	showIndexes   bool
+	showHelp      bool
 
 	sidebar   sidebar.Model
 	documents documents.Model
@@ -177,6 +180,24 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── keyboard ───────────────────────────────────────────────────────────────
 	case tea.KeyMsg:
+		// help overlay — any key closes it; ? opens it from ANY mode.
+		// These checks must come first so ? works even when a search/input is active.
+		if a.showHelp {
+			a.showHelp = false
+			return &a, nil
+		}
+		if message.String() == "?" {
+			a.showHelp = true
+			return &a, nil
+		}
+
+		// While the sidebar search is open, route all keys directly to it.
+		if a.focus == focusSidebar && a.sidebar.InSearchMode() {
+			var cmd tea.Cmd
+			a.sidebar, cmd = a.sidebar.Update(message)
+			return &a, cmd
+		}
+
 		// While the documents panel has an input bar open, route every
 		// keystroke directly to it — including q, h, l, esc, etc.
 		if a.focus == focusDocuments && a.documents.InInputMode() {
@@ -499,7 +520,7 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 // View composes the full-screen layout.
 func (a App) View() string {
-	if a.width == 0 {
+	if a.width == 0 || a.height == 0 {
 		return "initialising…"
 	}
 
@@ -527,10 +548,15 @@ func (a App) View() string {
 		)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	base := lipgloss.JoinVertical(lipgloss.Left,
 		row,
 		a.statusbar.SetWidth(a.width).View(),
 	)
+
+	if a.showHelp {
+		return renderHelp(base, a.width, a.height, a.th)
+	}
+	return base
 }
 
 // ── internal helpers ───────────────────────────────────────────────────────────
@@ -575,6 +601,154 @@ func (a App) applyLayout() App {
 	}
 	a.statusbar = a.statusbar.SetWidth(a.width)
 	return a
+}
+
+// renderHelp overlays a centred help panel on the dimmed base view (lazygit-style).
+func renderHelp(base string, w, h int, th *style.Theme) string {
+	box := buildHelpBox(w, h, th)
+
+	boxLines := strings.Split(box, "\n")
+	bh := len(boxLines)
+	bw := lipgloss.Width(boxLines[0])
+
+	startY := (h - bh) / 2
+	if startY < 0 {
+		startY = 0
+	}
+	startX := (w - bw) / 2
+	if startX < 0 {
+		startX = 0
+	}
+
+	// Dim style applied to base content that shows through the overlay.
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	baseLines := strings.Split(base, "\n")
+	for len(baseLines) < h {
+		baseLines = append(baseLines, "")
+	}
+
+	out := make([]string, h)
+	for y := 0; y < h; y++ {
+		plain := xansi.Strip(baseLines[y])
+		// Pad / trim to exactly w visible chars.
+		vw := lipgloss.Width(plain)
+		if vw < w {
+			plain += strings.Repeat(" ", w-vw)
+		} else if vw > w {
+			plain = xansi.Truncate(plain, w, "")
+		}
+
+		if y < startY || y >= startY+bh {
+			out[y] = dim.Render(plain)
+			continue
+		}
+
+		bi := y - startY
+
+		// Left section: base chars before the box.
+		left := xansi.Truncate(plain, startX, "")
+		lw := lipgloss.Width(left)
+		if lw < startX {
+			left += strings.Repeat(" ", startX-lw)
+		}
+
+		// Right section: base chars after the box.
+		right := xansi.TruncateLeft(plain, startX+bw, "")
+		rightW := w - startX - bw
+		if rightW > 0 {
+			rpw := lipgloss.Width(right)
+			if rpw < rightW {
+				right += strings.Repeat(" ", rightW-rpw)
+			}
+		} else {
+			right = ""
+		}
+
+		out[y] = dim.Render(left) + boxLines[bi] + dim.Render(right)
+	}
+
+	return strings.Join(out, "\n")
+}
+
+// buildHelpBox returns the rendered help box string (without positioning).
+func buildHelpBox(w, h int, th *style.Theme) string {
+	type section struct {
+		title string
+		rows  [][2]string
+	}
+	sections := []section{
+		{"Global", [][2]string{
+			{"?", "toggle this help"},
+			{"h / ←", "focus sidebar"},
+			{"l / →", "focus documents"},
+			{"esc", "close panel / go back"},
+			{"q / ctrl+c", "quit"},
+		}},
+		{"Sidebar", [][2]string{
+			{"j / k", "navigate"},
+			{"enter", "expand db / select collection"},
+			{"/", "search  (esc to close)"},
+			{"db:col", "filter by db and collection"},
+			{"R", "refresh list"},
+		}},
+		{"Documents", [][2]string{
+			{"j / k", "next / previous row"},
+			{"g / G", "first / last row"},
+			{"ctrl+d / ctrl+u", "next / previous page"},
+			{"enter", "open detail panel"},
+			{"n / e / d", "new / edit / delete doc"},
+			{"/", "filter  (MongoDB query JSON)"},
+			{"s", "sort  (field / -field / {…})"},
+			{"r", "reset filter and sort"},
+			{"a", "aggregate pipeline  ($EDITOR)"},
+			{"I", "toggle index panel"},
+			{"y / Y", "copy _id / full JSON"},
+		}},
+		{"Index panel", [][2]string{
+			{"n / d", "create / drop index"},
+			{"esc / h", "close panel"},
+		}},
+		{"Detail panel", [][2]string{
+			{"j / k", "scroll"},
+			{"esc / h", "close"},
+		}},
+	}
+
+	var lines []string
+	lines = append(lines,
+		th.TableHeader.Render("  KEY BINDINGS"),
+		th.DimText.Render("  any key to close"),
+		"",
+	)
+	for _, sec := range sections {
+		lines = append(lines, th.TableHeader.Render("  "+sec.title))
+		for _, row := range sec.rows {
+			k := fmt.Sprintf("  %-18s", row[0])
+			lines = append(lines, th.HelpKey.Render(k)+" "+th.HelpDesc.Render(row[1]))
+		}
+		lines = append(lines, "")
+	}
+
+	boxW := 54
+	if w < boxW+4 {
+		boxW = w - 4
+	}
+	maxInnerH := h - 4
+	if maxInnerH < 8 {
+		maxInnerH = 8
+	}
+	if len(lines) > maxInnerH {
+		lines = lines[:maxInnerH-1]
+		lines = append(lines, th.DimText.Render("  … see README for full list"))
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Padding(0, 1).
+		Render(strings.Join(lines, "\n"))
 }
 
 // currentDBCol extracts the current db and collection from documents panel.

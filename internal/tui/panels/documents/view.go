@@ -52,25 +52,29 @@ func (m Model) renderInner() string {
 		Width(m.width - 4).
 		Render(title)
 
+	innerH := m.height - 2
+	if innerH < 3 {
+		innerH = 3
+	}
+
+	pinBottom := func(topRows ...string) string {
+		bottom := m.renderBottom()
+		filler := innerH - len(topRows) - 1
+		parts := append(topRows, make([]string, max(0, filler))...)
+		parts = append(parts, bottom)
+		return strings.Join(parts, "\n")
+	}
+
 	if m.db == "" {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			header, "",
-			m.th.DimText.Render("  ← select a collection"),
-		)
+		return pinBottom(header, "", m.th.DimText.Render("  ← select a collection"))
 	}
 
 	if m.loading {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			header, "",
-			"  "+m.spinner.View()+" loading…",
-		)
+		return pinBottom(header, "", "  "+m.spinner.View()+" loading…")
 	}
 
 	if m.err != nil {
-		return lipgloss.JoinVertical(lipgloss.Left,
-			header, "",
-			m.th.ErrText.Render("  "+m.err.Error()),
-		)
+		return pinBottom(header, "", m.th.ErrText.Render("  "+m.err.Error()))
 	}
 
 	if len(m.docs) == 0 {
@@ -78,10 +82,7 @@ func (m Model) renderInner() string {
 		if m.filterExpr != "" {
 			noResult += "  (r to clear filter)"
 		}
-		return lipgloss.JoinVertical(lipgloss.Left,
-			header, "",
-			m.th.DimText.Render(noResult),
-		)
+		return pinBottom(header, "", m.th.DimText.Render(noResult))
 	}
 
 	innerW := m.width - 4
@@ -99,6 +100,11 @@ func (m Model) renderInner() string {
 	var rows []string
 	for i := start; i < end; i++ {
 		rows = append(rows, m.renderDocRow(i, colWidths))
+	}
+
+	// Pad to visibleRows so the bottom bar is always pinned at the absolute bottom.
+	for len(rows) < visibleRows {
+		rows = append(rows, "")
 	}
 
 	bottom := m.renderBottom()

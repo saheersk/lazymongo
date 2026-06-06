@@ -55,7 +55,7 @@ curl -fsSL https://github.com/saheersk/lazymongo/releases/latest/download/lazymo
 curl -fsSL https://github.com/saheersk/lazymongo/releases/latest/download/lazymongo_darwin_amd64.tar.gz | tar xz && sudo mv lazymongo /usr/local/bin/
 ```
 
-Or with Homebrew:
+Or with Homebrew (tap required before install):
 
 ```bash
 brew tap saheersk/tap
