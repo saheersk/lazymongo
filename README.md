@@ -1,5 +1,8 @@
 # lazymongo
 
+[![CI](https://github.com/saheersk/lazymongo/actions/workflows/ci.yml/badge.svg)](https://github.com/saheersk/lazymongo/actions/workflows/ci.yml)
+[![Release](https://github.com/saheersk/lazymongo/actions/workflows/release.yml/badge.svg)](https://github.com/saheersk/lazymongo/actions/workflows/release.yml)
+
 A fast, keyboard-driven terminal UI for MongoDB — inspired by lazygit and lazydocker.
 
 ```
@@ -36,13 +39,71 @@ A fast, keyboard-driven terminal UI for MongoDB — inspired by lazygit and lazy
 
 ## Install
 
-### go install
+### macOS
+
+```bash
+curl https://raw.githubusercontent.com/saheersk/lazymongo/main/scripts/install_update_darwin.sh | bash
+```
+
+Or manually:
+
+```bash
+# Apple Silicon (M1 / M2 / M3)
+curl -fsSL https://github.com/saheersk/lazymongo/releases/latest/download/lazymongo_darwin_arm64.tar.gz | tar xz && sudo mv lazymongo /usr/local/bin/
+
+# Intel
+curl -fsSL https://github.com/saheersk/lazymongo/releases/latest/download/lazymongo_darwin_amd64.tar.gz | tar xz && sudo mv lazymongo /usr/local/bin/
+```
+
+Or with Homebrew:
+
+```bash
+brew tap saheersk/tap
+brew install lazymongo
+```
+
+---
+
+### Linux
+
+```bash
+curl https://raw.githubusercontent.com/saheersk/lazymongo/main/scripts/install_update_linux.sh | bash
+```
+
+Or manually:
+
+```bash
+# amd64
+curl -fsSL https://github.com/saheersk/lazymongo/releases/latest/download/lazymongo_linux_amd64.tar.gz | tar xz && sudo mv lazymongo /usr/local/bin/
+
+# arm64 (Raspberry Pi, AWS Graviton)
+curl -fsSL https://github.com/saheersk/lazymongo/releases/latest/download/lazymongo_linux_arm64.tar.gz | tar xz && sudo mv lazymongo /usr/local/bin/
+```
+
+---
+
+### Windows
+
+```powershell
+Invoke-WebRequest https://github.com/saheersk/lazymongo/releases/latest/download/lazymongo_windows_amd64.zip -OutFile lazymongo.zip
+Expand-Archive lazymongo.zip -DestinationPath "$HOME\bin"
+```
+
+Then add `$HOME\bin` to your `PATH` via **System Properties → Environment Variables → Path → New**.
+
+Or download the `.zip` directly from the **[Releases page](https://github.com/saheersk/lazymongo/releases/latest)**.
+
+---
+
+### Go users (any platform)
 
 ```bash
 go install github.com/saheersk/lazymongo@latest
 ```
 
-Requires Go 1.21+. The binary lands in `$(go env GOPATH)/bin`.
+Requires Go 1.21+. The binary is placed in `$(go env GOPATH)/bin`.
+
+---
 
 ### Build from source
 
