@@ -15,7 +15,18 @@ var (
 	flagURI  string
 	flagHost string
 	flagPort int
+
+	buildVersion = "dev"
+	buildCommit  = "none"
+	buildDate    = "unknown"
 )
+
+// SetVersion is called from main with values injected by GoReleaser.
+func SetVersion(version, commit, date string) {
+	buildVersion = version
+	buildCommit = commit
+	buildDate = date
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "lazymongo",
@@ -39,6 +50,7 @@ func init() {
 	rootCmd.Flags().StringVar(&flagURI, "uri", "", "MongoDB connection URI (overrides config)")
 	rootCmd.Flags().StringVar(&flagHost, "host", "", "MongoDB host (default: localhost)")
 	rootCmd.Flags().IntVar(&flagPort, "port", 0, "MongoDB port (default: 27017)")
+	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", buildVersion, buildCommit, buildDate)
 }
 
 func runTUI(cmd *cobra.Command, _ []string) error {
