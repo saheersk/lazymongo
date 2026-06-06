@@ -65,6 +65,33 @@ type FilterChanged struct {
 	Expr   string // raw filter expression for display in status bar
 }
 
+// ---- CRUD editor ----
+
+// EditorDone is returned by the ExecProcess callback after the user's
+// $EDITOR closes. Doc is nil when the user aborted without saving.
+type EditorDone struct {
+	Doc    bson.M
+	IsNew  bool        // true → insert; false → replace
+	OrigID interface{} // original _id for replace operations
+	Err    error       // file/JSON parse error (shown in status bar)
+}
+
+// DocumentCreated confirms a successful insert.
+type DocumentCreated struct {
+	InsertedID interface{}
+	Err        error
+}
+
+// DocumentUpdated confirms a successful replace.
+type DocumentUpdated struct {
+	Err error
+}
+
+// DocumentDeleted confirms a successful delete.
+type DocumentDeleted struct {
+	Err error
+}
+
 // ---- status / error ----
 
 // StatusUpdate carries a transient message for the status bar.

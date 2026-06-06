@@ -80,13 +80,34 @@ func New(client *mongo.Client) *App {
 		}
 	}
 
+	insertDoc := func(db, col string, doc bson.M) tea.Cmd {
+		return func() tea.Msg {
+			id, err := client.InsertOne(db, col, doc)
+			return msg.DocumentCreated{InsertedID: id, Err: err}
+		}
+	}
+
+	replaceDoc := func(db, col string, id interface{}, doc bson.M) tea.Cmd {
+		return func() tea.Msg {
+			err := client.ReplaceOne(db, col, id, doc)
+			return msg.DocumentUpdated{Err: err}
+		}
+	}
+
+	deleteDoc := func(db, col string, id interface{}) tea.Cmd {
+		return func() tea.Msg {
+			err := client.DeleteOne(db, col, id)
+			return msg.DocumentDeleted{Err: err}
+		}
+	}
+
 	return &App{
 		client:    client,
 		th:        th,
 		km:        km,
 		focus:     focusSidebar,
 		sidebar:   sidebar.New(th, km, fetchDBs, fetchCols),
-		documents: documents.New(th, km, fetchPage),
+		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc),
 		detail:    detail.New(th, km),
 		statusbar: statusbar.New(th, client.URI()),
 	}
@@ -243,6 +264,45 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		var docCmd, sbCmd tea.Cmd
 		a.documents, docCmd = a.documents.Update(message)
 		a.statusbar, sbCmd = a.statusbar.Update(message)
+		cmds = append(cmds, docCmd, sbCmd)
+
+	// ── CRUD results ───────────────────────────────────────────────────────
+	case msg.EditorDone:
+		var cmd tea.Cmd
+		a.documents, cmd = a.documents.Update(message)
+		cmds = append(cmds, cmd)
+
+	case msg.DocumentCreated:
+		var docCmd, sbCmd tea.Cmd
+		a.documents, docCmd = a.documents.Update(message)
+		a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+			Text: fmt.Sprintf("inserted %v", message.InsertedID),
+		})
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: "insert failed: " + message.Err.Error(), IsErr: true,
+			})
+		}
+		cmds = append(cmds, docCmd, sbCmd)
+
+	case msg.DocumentUpdated:
+		var docCmd, sbCmd tea.Cmd
+		a.documents, docCmd = a.documents.Update(message)
+		text, isErr := "document updated", false
+		if message.Err != nil {
+			text, isErr = "update failed: "+message.Err.Error(), true
+		}
+		a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: text, IsErr: isErr})
+		cmds = append(cmds, docCmd, sbCmd)
+
+	case msg.DocumentDeleted:
+		var docCmd, sbCmd tea.Cmd
+		a.documents, docCmd = a.documents.Update(message)
+		text, isErr := "document deleted", false
+		if message.Err != nil {
+			text, isErr = "delete failed: "+message.Err.Error(), true
+		}
+		a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: text, IsErr: isErr})
 		cmds = append(cmds, docCmd, sbCmd)
 
 	case msg.StatusUpdate:

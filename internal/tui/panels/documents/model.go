@@ -13,6 +13,15 @@ import (
 // FetchPageFn is the async command injected at construction.
 type FetchPageFn func(db, col string, filter bson.M, sort bson.D, page int) tea.Cmd
 
+// InsertFn inserts a new document and returns a DocumentCreated message.
+type InsertFn func(db, col string, doc bson.M) tea.Cmd
+
+// ReplaceFn replaces a document by _id and returns a DocumentUpdated message.
+type ReplaceFn func(db, col string, id interface{}, doc bson.M) tea.Cmd
+
+// DeleteFn deletes a document by _id and returns a DocumentDeleted message.
+type DeleteFn func(db, col string, id interface{}) tea.Cmd
+
 // inputMode distinguishes which inline bar is active.
 type inputMode int
 
@@ -43,6 +52,8 @@ type Model struct {
 	input     textinput.Model
 	inputErr  string
 
+	deleteConfirm bool // waiting for y/N confirmation before deleting
+
 	focused       bool
 	loading       bool
 	pendingBottom bool
@@ -51,14 +62,23 @@ type Model struct {
 	width, height int
 
 	fetchPage FetchPageFn
-	spinner   spinner.Model
-	th        *style.Theme
-	km        *keymap.Map
+	insertFn  InsertFn
+	replaceFn ReplaceFn
+	deleteFn  DeleteFn
+
+	spinner spinner.Model
+	th      *style.Theme
+	km      *keymap.Map
 }
 
 // New constructs a document panel. It starts empty; a CollectionSelected
 // message triggers the first load.
-func New(th *style.Theme, km *keymap.Map, fetchPage FetchPageFn) Model {
+func New(th *style.Theme, km *keymap.Map,
+	fetchPage FetchPageFn,
+	insertFn InsertFn,
+	replaceFn ReplaceFn,
+	deleteFn DeleteFn,
+) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
@@ -68,6 +88,9 @@ func New(th *style.Theme, km *keymap.Map, fetchPage FetchPageFn) Model {
 	return Model{
 		pageSize:  50,
 		fetchPage: fetchPage,
+		insertFn:  insertFn,
+		replaceFn: replaceFn,
+		deleteFn:  deleteFn,
 		spinner:   sp,
 		input:     ti,
 		th:        th,
@@ -75,10 +98,11 @@ func New(th *style.Theme, km *keymap.Map, fetchPage FetchPageFn) Model {
 	}
 }
 
-// InFilterMode reports whether the panel is currently capturing filter input.
-// The app uses this to bypass global key handlers so the user can type
-// freely (including 'q', 'h', etc.) without triggering navigation.
-func (m Model) InInputMode() bool { return m.mode != modeNone }
+// InInputMode reports whether the panel has captured focus for a modal
+// interaction (filter/sort bar or delete confirmation).  The app uses
+// this to bypass global key handlers so keystrokes like q, h, esc don't
+// accidentally trigger navigation while the user is interacting.
+func (m Model) InInputMode() bool { return m.mode != modeNone || m.deleteConfirm }
 
 // Init is a no-op; document fetching begins when a collection is selected.
 func (m Model) Init() tea.Cmd { return nil }

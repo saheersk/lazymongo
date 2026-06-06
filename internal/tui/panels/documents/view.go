@@ -108,38 +108,41 @@ func (m Model) renderInner() string {
 	)
 }
 
-// renderBottom renders the bottom bar: the input bar when active, otherwise
-// the standard pager line.
+// renderBottom renders the bottom bar: delete confirm, an input bar, or the
+// standard pager + key hints.
 func (m Model) renderBottom() string {
 	innerW := m.width - 4
 
-	switch m.mode {
-	case modeFilter:
+	// ── delete confirmation ────────────────────────────────────────────────
+	if m.deleteConfirm {
+		doc := m.ActiveDoc()
+		idStr := ""
+		if doc != nil {
+			idStr = util.FormatValue(doc["_id"])
+			if len(idStr) > 20 {
+				idStr = idStr[:19] + "…"
+			}
+		}
+		bar := m.th.ErrText.Render("  Delete ") +
+			m.th.DimText.Render(idStr) +
+			m.th.ErrText.Render("?  ") +
+			m.th.HelpKey.Render("y") + m.th.HelpDesc.Render(" yes  ") +
+			m.th.HelpKey.Render("any") + m.th.HelpDesc.Render(" cancel")
+		return lipgloss.NewStyle().Width(innerW).Render(bar)
+	}
+
+	// ── filter bar ────────────────────────────────────────────────────────
+	if m.mode == modeFilter {
 		prompt := m.th.StatusFilter.Render("  filter › ")
-		inp := m.input.View()
-		bar := prompt + inp
+		bar := prompt + m.input.View()
 		if m.inputErr != "" {
 			bar += "  " + m.th.ErrText.Render(m.inputErr)
 		}
-		hint := m.th.DimText.Render("  enter apply  esc cancel  ctrl+u clear")
+		var hint string
 		if m.inputErr != "" {
 			hint = m.th.DimText.Render("  fix query or esc to cancel")
-		}
-		return lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.NewStyle().Width(innerW).Render(bar),
-			hint,
-		)
-
-	case modeSort:
-		prompt := m.th.StatusPager.Render("  sort › ")
-		inp := m.input.View()
-		bar := prompt + inp
-		if m.inputErr != "" {
-			bar += "  " + m.th.ErrText.Render(m.inputErr)
-		}
-		hint := m.th.DimText.Render("  field / -field / {\"f\":1} • enter apply  esc cancel")
-		if m.inputErr != "" {
-			hint = m.th.DimText.Render("  fix sort or esc to cancel")
+		} else {
+			hint = m.th.DimText.Render("  enter apply  esc cancel  ctrl+u clear  empty = no filter")
 		}
 		return lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Width(innerW).Render(bar),
@@ -147,17 +150,37 @@ func (m Model) renderBottom() string {
 		)
 	}
 
-	// Normal mode: pager + compact help hints.
+	// ── sort bar ──────────────────────────────────────────────────────────
+	if m.mode == modeSort {
+		prompt := m.th.StatusPager.Render("  sort › ")
+		bar := prompt + m.input.View()
+		if m.inputErr != "" {
+			bar += "  " + m.th.ErrText.Render(m.inputErr)
+		}
+		var hint string
+		if m.inputErr != "" {
+			hint = m.th.DimText.Render("  fix sort or esc to cancel")
+		} else {
+			hint = m.th.DimText.Render("  field / -field / {\"f\":1}  enter apply  esc cancel")
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Width(innerW).Render(bar),
+			hint,
+		)
+	}
+
+	// ── normal: pager + compact hints ─────────────────────────────────────
 	pager := m.renderPager()
 	var hints []string
+	hints = append(hints, m.th.HelpKey.Render("n")+" "+m.th.HelpDesc.Render("new"))
+	hints = append(hints, m.th.HelpKey.Render("e")+" "+m.th.HelpDesc.Render("edit"))
+	hints = append(hints, m.th.HelpKey.Render("d")+" "+m.th.HelpDesc.Render("delete"))
 	hints = append(hints, m.th.HelpKey.Render("/")+" "+m.th.HelpDesc.Render("filter"))
 	hints = append(hints, m.th.HelpKey.Render("s")+" "+m.th.HelpDesc.Render("sort"))
 	if m.filterExpr != "" || m.sortExpr != "" {
 		hints = append(hints, m.th.HelpKey.Render("r")+" "+m.th.HelpDesc.Render("reset"))
 	}
-	hints = append(hints, m.th.HelpKey.Render("enter")+" "+m.th.HelpDesc.Render("open"))
-	helpLine := "  " + strings.Join(hints, "  ")
-	return pager + "  " + m.th.DimText.Render(helpLine)
+	return pager + "  " + m.th.DimText.Render(strings.Join(hints, "  "))
 }
 
 func (m Model) renderHeaderRow(widths []int) string {
