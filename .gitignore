@@ -1,0 +1,25 @@
+# compiled binary
+lazymongo
+
+# build output
+dist/
+bin/
+
+# editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code session data
+.claude/
+memory/
+
+# env / secrets
+.env
+.env.*
+config.local.yaml
