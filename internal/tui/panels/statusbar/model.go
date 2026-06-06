@@ -67,7 +67,11 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 
 	case msg.FilterChanged:
 		if message.Filter != nil {
-			m.filter = "filtered"
+			short := message.Expr
+			if len(short) > 24 {
+				short = short[:23] + "…"
+			}
+			m.filter = short
 		} else {
 			m.filter = ""
 		}
@@ -101,7 +105,7 @@ func (m Model) View() string {
 	}
 
 	if m.filter != "" {
-		mid += m.th.StatusFilter.Render("filter  ")
+		mid += m.th.StatusFilter.Render(" ["+m.filter+"]  ")
 	}
 
 	var right string

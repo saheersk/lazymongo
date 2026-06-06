@@ -3,6 +3,7 @@ package documents
 
 import (
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/saheersk/lazymongo/internal/tui/keymap"
 	"github.com/saheersk/lazymongo/internal/tui/style"
@@ -11,6 +12,15 @@ import (
 
 // FetchPageFn is the async command injected at construction.
 type FetchPageFn func(db, col string, filter bson.M, sort bson.D, page int) tea.Cmd
+
+// inputMode distinguishes which inline bar is active.
+type inputMode int
+
+const (
+	modeNone   inputMode = iota
+	modeFilter           // '/' — filter query
+	modeSort             // 's' — sort field
+)
 
 // Model is the bubbletea model for the document list panel.
 type Model struct {
@@ -24,12 +34,18 @@ type Model struct {
 	total    int64
 	pageSize int
 
-	filter bson.M
-	sort   bson.D
+	filter     bson.M
+	sort       bson.D
+	filterExpr string // raw text of the active filter (for display + re-edit)
+	sortExpr   string // raw text of the active sort   (for display + re-edit)
+
+	mode      inputMode
+	input     textinput.Model
+	inputErr  string
 
 	focused       bool
 	loading       bool
-	pendingBottom bool // set by G; cursor jumps to last doc after page loads
+	pendingBottom bool
 	err           error
 
 	width, height int
@@ -46,14 +62,23 @@ func New(th *style.Theme, km *keymap.Map, fetchPage FetchPageFn) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
+	ti := textinput.New()
+	ti.CharLimit = 256
+
 	return Model{
 		pageSize:  50,
 		fetchPage: fetchPage,
 		spinner:   sp,
+		input:     ti,
 		th:        th,
 		km:        km,
 	}
 }
+
+// InFilterMode reports whether the panel is currently capturing filter input.
+// The app uses this to bypass global key handlers so the user can type
+// freely (including 'q', 'h', etc.) without triggering navigation.
+func (m Model) InInputMode() bool { return m.mode != modeNone }
 
 // Init is a no-op; document fetching begins when a collection is selected.
 func (m Model) Init() tea.Cmd { return nil }

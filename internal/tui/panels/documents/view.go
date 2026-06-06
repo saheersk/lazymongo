@@ -28,6 +28,21 @@ func (m Model) renderInner() string {
 	if title == "" {
 		title = "DOCUMENTS"
 	}
+	// Show active filter/sort badges in the title.
+	if m.filterExpr != "" {
+		short := m.filterExpr
+		if len(short) > 22 {
+			short = short[:21] + "…"
+		}
+		title += "  " + m.th.StatusFilter.Render("[f: "+short+"]")
+	}
+	if m.sortExpr != "" {
+		short := m.sortExpr
+		if len(short) > 16 {
+			short = short[:15] + "…"
+		}
+		title += " " + m.th.StatusPager.Render("[s: "+short+"]")
+	}
 
 	header := m.th.TableHeader.
 		Width(m.width - 4).
@@ -55,20 +70,23 @@ func (m Model) renderInner() string {
 	}
 
 	if len(m.docs) == 0 {
+		noResult := "  no documents found"
+		if m.filterExpr != "" {
+			noResult += "  (r to clear filter)"
+		}
 		return lipgloss.JoinVertical(lipgloss.Left,
 			header, "",
-			m.th.DimText.Render("  no documents found"),
+			m.th.DimText.Render(noResult),
 		)
 	}
 
-	innerW := m.width - 4 // account for border + padding
+	innerW := m.width - 4
 	colWidths := distributeWidths(m.columns, innerW)
 
-	// column header row
 	colHeader := m.renderHeaderRow(colWidths)
 
-	// visible rows
-	visibleRows := m.height - 6 // border(2) + title(1) + blank(1) + colheader(1) + pager(1)
+	// visibleRows: subtract 1 extra when input bar is visible (replaces pager).
+	visibleRows := m.height - 6 // border(2) + title(1) + blank(1) + colheader(1) + bottom(1)
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
@@ -79,15 +97,67 @@ func (m Model) renderInner() string {
 		rows = append(rows, m.renderDocRow(i, colWidths))
 	}
 
-	pager := m.renderPager()
+	bottom := m.renderBottom()
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		"",
 		colHeader,
 		strings.Join(rows, "\n"),
-		pager,
+		bottom,
 	)
+}
+
+// renderBottom renders the bottom bar: the input bar when active, otherwise
+// the standard pager line.
+func (m Model) renderBottom() string {
+	innerW := m.width - 4
+
+	switch m.mode {
+	case modeFilter:
+		prompt := m.th.StatusFilter.Render("  filter › ")
+		inp := m.input.View()
+		bar := prompt + inp
+		if m.inputErr != "" {
+			bar += "  " + m.th.ErrText.Render(m.inputErr)
+		}
+		hint := m.th.DimText.Render("  enter apply  esc cancel  ctrl+u clear")
+		if m.inputErr != "" {
+			hint = m.th.DimText.Render("  fix query or esc to cancel")
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Width(innerW).Render(bar),
+			hint,
+		)
+
+	case modeSort:
+		prompt := m.th.StatusPager.Render("  sort › ")
+		inp := m.input.View()
+		bar := prompt + inp
+		if m.inputErr != "" {
+			bar += "  " + m.th.ErrText.Render(m.inputErr)
+		}
+		hint := m.th.DimText.Render("  field / -field / {\"f\":1} • enter apply  esc cancel")
+		if m.inputErr != "" {
+			hint = m.th.DimText.Render("  fix sort or esc to cancel")
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Width(innerW).Render(bar),
+			hint,
+		)
+	}
+
+	// Normal mode: pager + compact help hints.
+	pager := m.renderPager()
+	var hints []string
+	hints = append(hints, m.th.HelpKey.Render("/")+" "+m.th.HelpDesc.Render("filter"))
+	hints = append(hints, m.th.HelpKey.Render("s")+" "+m.th.HelpDesc.Render("sort"))
+	if m.filterExpr != "" || m.sortExpr != "" {
+		hints = append(hints, m.th.HelpKey.Render("r")+" "+m.th.HelpDesc.Render("reset"))
+	}
+	hints = append(hints, m.th.HelpKey.Render("enter")+" "+m.th.HelpDesc.Render("open"))
+	helpLine := "  " + strings.Join(hints, "  ")
+	return pager + "  " + m.th.DimText.Render(helpLine)
 }
 
 func (m Model) renderHeaderRow(widths []int) string {
@@ -149,18 +219,17 @@ func (m Model) viewportWindow(rows int) (int, int) {
 	return start, end
 }
 
-// distributeWidths assigns pixel-widths to each column proportionally,
-// giving _id a fixed width and splitting the rest evenly.
+// distributeWidths gives _id a fixed 24-char slot and splits remaining
+// space evenly among other columns.
 func distributeWidths(cols []string, totalW int) []int {
 	if len(cols) == 0 {
 		return nil
 	}
 	widths := make([]int, len(cols))
 
-	// _id always gets 24 chars (ObjectID hex length)
 	const idW = 24
 	widths[0] = idW
-	remaining := totalW - idW - len(cols) // account for spaces
+	remaining := totalW - idW - len(cols) // account for 1-space separators
 
 	if len(cols) > 1 && remaining > 0 {
 		each := remaining / (len(cols) - 1)

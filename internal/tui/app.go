@@ -117,6 +117,14 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── keyboard ───────────────────────────────────────────────────────────
 	case tea.KeyMsg:
+		// While the documents panel has an input bar open, route every
+		// keystroke directly to it — including q, h, l, esc, etc.
+		if a.focus == focusDocuments && a.documents.InInputMode() {
+			var cmd tea.Cmd
+			a.documents, cmd = a.documents.Update(message)
+			return &a, cmd
+		}
+
 		// global: quit
 		if message.String() == "q" || message.String() == "ctrl+c" {
 			return &a, tea.Quit

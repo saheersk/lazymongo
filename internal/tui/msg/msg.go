@@ -58,11 +58,11 @@ type DocumentSelected struct {
 	Doc bson.M
 }
 
-// FilterChanged is emitted by the querybar when the active filter changes.
+// FilterChanged is emitted by the documents panel when the active filter changes.
 type FilterChanged struct {
-	Filter     bson.M
-	Sort       bson.D
-	Projection bson.M
+	Filter bson.M
+	Sort   bson.D
+	Expr   string // raw filter expression for display in status bar
 }
 
 // ---- status / error ----
