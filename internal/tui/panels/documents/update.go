@@ -32,6 +32,8 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		m.mode = modeNone
 		m.inputErr = ""
 		m.deleteConfirm = false
+		m.aggMode = false
+		m.aggPipeline = ""
 		m.err = nil
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.loadPage(0))
@@ -44,6 +46,11 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = nil
+		// If we are showing aggregate results, ignore incoming page loads so
+		// background refreshes don't clobber the agg view.
+		if m.aggMode {
+			return m, nil
+		}
 		m.docs = message.Result.Docs
 		m.total = message.Result.Total
 		m.page = message.Result.Page
@@ -56,6 +63,34 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 
 	// ── filter/sort applied ──────────────────────────────────────────────────
 	case msg.FilterChanged:
+		return m, nil
+
+	// ── pipeline ready (editor closed, file parsed) ───────────────────────────
+	case msg.PipelineReady:
+		if message.Err != nil {
+			return m, statusCmd("pipeline error: " + message.Err.Error())
+		}
+		// Store the raw text for re-run prefill and fire the actual DB call.
+		m.aggPipeline = message.PipelineText
+		m.loading = true
+		return m, tea.Batch(
+			m.spinner.Tick,
+			m.aggregateFn(m.db, m.collection, message.Pipeline),
+		)
+
+	// ── aggregate result (DB call completed) ──────────────────────────────────
+	case msg.AggregateResult:
+		m.loading = false
+		if message.Err != nil {
+			return m, statusCmd("aggregate error: " + message.Err.Error())
+		}
+		m.err = nil
+		m.aggMode = true
+		m.docs = message.Docs
+		m.total = int64(len(message.Docs))
+		m.page = 0
+		m.cursor = 0
+		m.columns = util.BuildColumns(m.docs, maxColumns(m.width))
 		return m, nil
 
 	// ── editor closed ────────────────────────────────────────────────────────
@@ -76,6 +111,7 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		if message.Err != nil {
 			return m, statusCmd("insert failed: " + message.Err.Error())
 		}
+		m.aggMode = false
 		m.loading = true
 		return m, tea.Batch(
 			m.spinner.Tick,
@@ -87,6 +123,7 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		if message.Err != nil {
 			return m, statusCmd("update failed: " + message.Err.Error())
 		}
+		m.aggMode = false
 		m.loading = true
 		return m, tea.Batch(
 			m.spinner.Tick,
@@ -98,8 +135,7 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		if message.Err != nil {
 			return m, statusCmd("delete failed: " + message.Err.Error())
 		}
-		// If the cursor was at the last slot on the page and we deleted it,
-		// clamp so we don't go out of range after the reload.
+		m.aggMode = false
 		if m.cursor > 0 {
 			m.cursor--
 		}
@@ -136,6 +172,15 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 	// filter/sort bar captures all input
 	if m.mode != modeNone {
 		return m.handleInputKey(key)
+	}
+
+	// esc while showing aggregate results exits agg mode and reloads
+	if m.aggMode && key.String() == "esc" {
+		m.aggMode = false
+		m.aggPipeline = ""
+		m.docs = nil
+		m.loading = true
+		return m, tea.Batch(m.spinner.Tick, m.loadPage(m.page))
 	}
 
 	switch {
@@ -245,6 +290,13 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.deleteConfirm = true
 		return m, nil
+
+	// ── aggregate pipeline ───────────────────────────────────────────────────
+	case key.String() == "a":
+		if m.db == "" {
+			return m, statusCmd("select a collection first")
+		}
+		return m.openAggregateEditor()
 
 	// ── clipboard ────────────────────────────────────────────────────────────
 	case key.String() == "y":
@@ -407,6 +459,40 @@ func (m Model) openEditorEdit(doc bson.M) (Model, tea.Cmd) {
 			return msg.EditorDone{Err: err}
 		}
 		return msg.EditorDone{Doc: newDoc, IsNew: false, OrigID: origID}
+	})
+}
+
+const aggTemplate = `[
+  { "$match": {} }
+]`
+
+func (m Model) openAggregateEditor() (Model, tea.Cmd) {
+	content := m.aggPipeline
+	if content == "" {
+		content = aggTemplate
+	}
+	ec, err := buildEditorCmd(content)
+	if err != nil {
+		return m, statusCmd("error: " + err.Error())
+	}
+	return m, tea.ExecProcess(ec.cmd, func(execErr error) tea.Msg {
+		defer os.Remove(ec.path)
+		if execErr != nil {
+			return msg.PipelineReady{Err: execErr}
+		}
+		data, err := os.ReadFile(ec.path)
+		if err != nil {
+			return msg.PipelineReady{Err: err}
+		}
+		raw := strings.TrimSpace(string(data))
+		if raw == "" {
+			return msg.PipelineReady{Err: fmt.Errorf("empty pipeline — no changes")}
+		}
+		var pipeline bson.A
+		if err := bson.UnmarshalExtJSON([]byte(raw), false, &pipeline); err != nil {
+			return msg.PipelineReady{Err: fmt.Errorf("invalid pipeline JSON: %w", err)}
+		}
+		return msg.PipelineReady{Pipeline: pipeline, PipelineText: raw}
 	})
 }
 

@@ -27,6 +27,9 @@ type Map struct {
 	DeleteDoc key.Binding
 	CopyID    key.Binding
 	CopyDoc   key.Binding
+
+	Aggregate key.Binding
+	Indexes   key.Binding
 }
 
 // Default returns the standard vim-style key bindings.
@@ -53,6 +56,9 @@ func Default() *Map {
 		DeleteDoc: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		CopyID:    key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy id")),
 		CopyDoc:   key.NewBinding(key.WithKeys("Y"), key.WithHelp("Y", "copy doc")),
+
+		Aggregate: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "aggregate")),
+		Indexes:   key.NewBinding(key.WithKeys("I"), key.WithHelp("I", "indexes")),
 	}
 }
 
@@ -68,6 +74,7 @@ func (m *Map) FullHelp() [][]key.Binding {
 		{m.Left, m.Right, m.Select, m.Back},
 		{m.PageUp, m.PageDown, m.Refresh, m.Filter},
 		{m.NewDoc, m.EditDoc, m.DeleteDoc},
-		{m.CopyID, m.CopyDoc, m.Quit, m.Help},
+		{m.CopyID, m.CopyDoc, m.Aggregate, m.Indexes},
+		{m.Quit, m.Help},
 	}
 }

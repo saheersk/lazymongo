@@ -28,6 +28,10 @@ func (m Model) renderInner() string {
 	if title == "" {
 		title = "DOCUMENTS"
 	}
+	// Show aggregate mode badge.
+	if m.aggMode {
+		title += "  " + m.th.ErrText.Render("[AGG]")
+	}
 	// Show active filter/sort badges in the title.
 	if m.filterExpr != "" {
 		short := m.filterExpr
@@ -172,13 +176,20 @@ func (m Model) renderBottom() string {
 	// ── normal: pager + compact hints ─────────────────────────────────────
 	pager := m.renderPager()
 	var hints []string
-	hints = append(hints, m.th.HelpKey.Render("n")+" "+m.th.HelpDesc.Render("new"))
-	hints = append(hints, m.th.HelpKey.Render("e")+" "+m.th.HelpDesc.Render("edit"))
-	hints = append(hints, m.th.HelpKey.Render("d")+" "+m.th.HelpDesc.Render("delete"))
-	hints = append(hints, m.th.HelpKey.Render("/")+" "+m.th.HelpDesc.Render("filter"))
-	hints = append(hints, m.th.HelpKey.Render("s")+" "+m.th.HelpDesc.Render("sort"))
-	if m.filterExpr != "" || m.sortExpr != "" {
-		hints = append(hints, m.th.HelpKey.Render("r")+" "+m.th.HelpDesc.Render("reset"))
+	if m.aggMode {
+		hints = append(hints, m.th.HelpKey.Render("a")+" "+m.th.HelpDesc.Render("re-run"))
+		hints = append(hints, m.th.HelpKey.Render("esc")+" "+m.th.HelpDesc.Render("exit agg"))
+	} else {
+		hints = append(hints, m.th.HelpKey.Render("n")+" "+m.th.HelpDesc.Render("new"))
+		hints = append(hints, m.th.HelpKey.Render("e")+" "+m.th.HelpDesc.Render("edit"))
+		hints = append(hints, m.th.HelpKey.Render("d")+" "+m.th.HelpDesc.Render("delete"))
+		hints = append(hints, m.th.HelpKey.Render("/")+" "+m.th.HelpDesc.Render("filter"))
+		hints = append(hints, m.th.HelpKey.Render("s")+" "+m.th.HelpDesc.Render("sort"))
+		hints = append(hints, m.th.HelpKey.Render("a")+" "+m.th.HelpDesc.Render("aggregate"))
+		hints = append(hints, m.th.HelpKey.Render("I")+" "+m.th.HelpDesc.Render("indexes"))
+		if m.filterExpr != "" || m.sortExpr != "" {
+			hints = append(hints, m.th.HelpKey.Render("r")+" "+m.th.HelpDesc.Render("reset"))
+		}
 	}
 	return pager + "  " + m.th.DimText.Render(strings.Join(hints, "  "))
 }

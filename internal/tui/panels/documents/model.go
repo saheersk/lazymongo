@@ -22,6 +22,9 @@ type ReplaceFn func(db, col string, id interface{}, doc bson.M) tea.Cmd
 // DeleteFn deletes a document by _id and returns a DocumentDeleted message.
 type DeleteFn func(db, col string, id interface{}) tea.Cmd
 
+// AggregateFn runs a pipeline and returns an AggregateResult message.
+type AggregateFn func(db, col string, pipeline bson.A) tea.Cmd
+
 // inputMode distinguishes which inline bar is active.
 type inputMode int
 
@@ -54,6 +57,9 @@ type Model struct {
 
 	deleteConfirm bool // waiting for y/N confirmation before deleting
 
+	aggMode     bool   // true → showing aggregate results, not the live collection
+	aggPipeline string // raw pipeline text used in the last aggregate run
+
 	focused       bool
 	loading       bool
 	pendingBottom bool
@@ -61,10 +67,11 @@ type Model struct {
 
 	width, height int
 
-	fetchPage FetchPageFn
-	insertFn  InsertFn
-	replaceFn ReplaceFn
-	deleteFn  DeleteFn
+	fetchPage   FetchPageFn
+	insertFn    InsertFn
+	replaceFn   ReplaceFn
+	deleteFn    DeleteFn
+	aggregateFn AggregateFn
 
 	spinner spinner.Model
 	th      *style.Theme
@@ -78,6 +85,7 @@ func New(th *style.Theme, km *keymap.Map,
 	insertFn InsertFn,
 	replaceFn ReplaceFn,
 	deleteFn DeleteFn,
+	aggregateFn AggregateFn,
 ) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -86,23 +94,27 @@ func New(th *style.Theme, km *keymap.Map,
 	ti.CharLimit = 256
 
 	return Model{
-		pageSize:  50,
-		fetchPage: fetchPage,
-		insertFn:  insertFn,
-		replaceFn: replaceFn,
-		deleteFn:  deleteFn,
-		spinner:   sp,
-		input:     ti,
-		th:        th,
-		km:        km,
+		pageSize:    50,
+		fetchPage:   fetchPage,
+		insertFn:    insertFn,
+		replaceFn:   replaceFn,
+		deleteFn:    deleteFn,
+		aggregateFn: aggregateFn,
+		spinner:     sp,
+		input:       ti,
+		th:          th,
+		km:          km,
 	}
 }
 
 // InInputMode reports whether the panel has captured focus for a modal
-// interaction (filter/sort bar or delete confirmation).  The app uses
+// interaction (filter/sort bar or delete confirmation). The app uses
 // this to bypass global key handlers so keystrokes like q, h, esc don't
 // accidentally trigger navigation while the user is interacting.
 func (m Model) InInputMode() bool { return m.mode != modeNone || m.deleteConfirm }
+
+// InAggMode reports whether aggregate results are currently displayed.
+func (m Model) InAggMode() bool { return m.aggMode }
 
 // Init is a no-op; document fetching begins when a collection is selected.
 func (m Model) Init() tea.Cmd { return nil }

@@ -65,6 +65,70 @@ type FilterChanged struct {
 	Expr   string // raw filter expression for display in status bar
 }
 
+// ---- aggregation ----
+
+// PipelineReady is dispatched by the ExecProcess callback after the user saves
+// a pipeline file. It carries the parsed pipeline so the app can fire the
+// actual aggregate command as a separate async cmd (the same split CRUD uses).
+type PipelineReady struct {
+	Pipeline     bson.A
+	PipelineText string // raw JSON for re-run prefill
+	Err          error  // file-read / JSON-parse error (before any DB call)
+}
+
+// AggregateResult is returned after running a pipeline.
+type AggregateResult struct {
+	Docs         []bson.M
+	Err          error
+	PipelineText string // echoed back from PipelineReady so Model can store it
+}
+
+// ---- indexes ----
+
+// IndexInfo describes a single index on a collection.
+type IndexInfo struct {
+	Name       string
+	Keys       bson.D
+	Unique     bool
+	Sparse     bool
+	TTLSeconds int32 // -1 = not a TTL index
+}
+
+// CollectionStats holds lightweight collection metadata.
+type CollectionStats struct {
+	DocCount   int64
+	IndexCount int
+}
+
+// IndexesLoaded is dispatched when the index list finishes loading.
+type IndexesLoaded struct {
+	DB         string
+	Collection string
+	Indexes    []IndexInfo
+	Stats      CollectionStats
+	Err        error
+}
+
+// IndexEditorDone is returned by the ExecProcess callback after the
+// user edits an index definition file.
+type IndexEditorDone struct {
+	Keys   bson.D
+	Unique bool
+	Sparse bool
+	Err    error
+}
+
+// IndexCreated confirms a successful index creation.
+type IndexCreated struct {
+	Name string
+	Err  error
+}
+
+// IndexDropped confirms a successful index drop.
+type IndexDropped struct {
+	Err error
+}
+
 // ---- CRUD editor ----
 
 // EditorDone is returned by the ExecProcess callback after the user's

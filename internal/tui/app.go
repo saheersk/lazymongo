@@ -12,6 +12,7 @@ import (
 	"github.com/saheersk/lazymongo/internal/tui/msg"
 	"github.com/saheersk/lazymongo/internal/tui/panels/detail"
 	"github.com/saheersk/lazymongo/internal/tui/panels/documents"
+	"github.com/saheersk/lazymongo/internal/tui/panels/indexes"
 	"github.com/saheersk/lazymongo/internal/tui/panels/sidebar"
 	"github.com/saheersk/lazymongo/internal/tui/panels/statusbar"
 	"github.com/saheersk/lazymongo/internal/tui/style"
@@ -24,12 +25,13 @@ const (
 	focusSidebar   focusedPanel = iota
 	focusDocuments
 	focusDetail
+	focusIndexes
 )
 
 // layout widths
 const (
-	sidebarWidth  = 28
-	sidebarWidthS = 20 // narrow terminals
+	sidebarWidth   = 28
+	sidebarWidthS  = 20 // narrow terminals
 	docsWithDetail = 38 // documents panel width when detail is open
 )
 
@@ -38,10 +40,12 @@ type App struct {
 	width, height int
 	focus         focusedPanel
 	showDetail    bool
+	showIndexes   bool
 
 	sidebar   sidebar.Model
 	documents documents.Model
 	detail    detail.Model
+	indexes   indexes.Model
 	statusbar statusbar.Model
 
 	client *mongo.Client
@@ -101,14 +105,49 @@ func New(client *mongo.Client) *App {
 		}
 	}
 
+	aggregateDocs := func(db, col string, pipeline bson.A) tea.Cmd {
+		return func() tea.Msg {
+			docs, err := client.Aggregate(db, col, pipeline)
+			return msg.AggregateResult{Docs: docs, Err: err}
+		}
+	}
+
+	fetchIndexes := func(db, col string) tea.Cmd {
+		return func() tea.Msg {
+			idxs, stats, err := client.ListIndexesAndStats(db, col)
+			return msg.IndexesLoaded{
+				DB:         db,
+				Collection: col,
+				Indexes:    idxs,
+				Stats:      stats,
+				Err:        err,
+			}
+		}
+	}
+
+	createIndex := func(db, col string, keys bson.D, unique, sparse bool) tea.Cmd {
+		return func() tea.Msg {
+			name, err := client.CreateIndex(db, col, keys, unique, sparse)
+			return msg.IndexCreated{Name: name, Err: err}
+		}
+	}
+
+	dropIndex := func(db, col, name string) tea.Cmd {
+		return func() tea.Msg {
+			err := client.DropIndex(db, col, name)
+			return msg.IndexDropped{Err: err}
+		}
+	}
+
 	return &App{
 		client:    client,
 		th:        th,
 		km:        km,
 		focus:     focusSidebar,
 		sidebar:   sidebar.New(th, km, fetchDBs, fetchCols),
-		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc),
+		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, aggregateDocs),
 		detail:    detail.New(th, km),
+		indexes:   indexes.New(th, km, fetchIndexes, createIndex, dropIndex),
 		statusbar: statusbar.New(th, client.URI()),
 	}
 }
@@ -129,20 +168,27 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch message := message.(type) {
 
-	// ── window resize ──────────────────────────────────────────────────────
+	// ── window resize ──────────────────────────────────────────────────────────
 	case tea.WindowSizeMsg:
 		a.width = message.Width
 		a.height = message.Height
 		a = a.applyLayout()
 		return &a, nil
 
-	// ── keyboard ───────────────────────────────────────────────────────────
+	// ── keyboard ───────────────────────────────────────────────────────────────
 	case tea.KeyMsg:
 		// While the documents panel has an input bar open, route every
 		// keystroke directly to it — including q, h, l, esc, etc.
 		if a.focus == focusDocuments && a.documents.InInputMode() {
 			var cmd tea.Cmd
 			a.documents, cmd = a.documents.Update(message)
+			return &a, cmd
+		}
+
+		// While the indexes panel is in drop-confirm mode, route keys there.
+		if a.focus == focusIndexes && a.indexes.InConfirmMode() {
+			var cmd tea.Cmd
+			a.indexes, cmd = a.indexes.Update(message)
 			return &a, cmd
 		}
 
@@ -155,6 +201,8 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.String() == "h" || message.String() == "left" {
 			switch a.focus {
 			case focusDetail:
+				a.focus = focusDocuments
+			case focusIndexes:
 				a.focus = focusDocuments
 			default:
 				a.focus = focusSidebar
@@ -175,12 +223,15 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				if a.showDetail {
 					a.focus = focusDetail
 					a = a.syncFocus()
+				} else if a.showIndexes {
+					a.focus = focusIndexes
+					a = a.syncFocus()
 				}
 			}
 			return &a, nil
 		}
 
-		// esc: close detail or go to sidebar
+		// esc handling
 		if message.String() == "esc" {
 			switch a.focus {
 			case focusDetail:
@@ -189,11 +240,58 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				a = a.syncFocus()
 				a = a.applyLayout()
 				return &a, nil
+			case focusIndexes:
+				a.showIndexes = false
+				a.focus = focusDocuments
+				a = a.syncFocus()
+				a = a.applyLayout()
+				return &a, nil
 			case focusDocuments:
+				// Let documents panel handle esc first (agg mode exit),
+				// otherwise go to sidebar.
+				if a.documents.InAggMode() {
+					var cmd tea.Cmd
+					a.documents, cmd = a.documents.Update(message)
+					return &a, cmd
+				}
 				a.focus = focusSidebar
 				a = a.syncFocus()
 				return &a, nil
 			}
+		}
+
+		// 'a' opens the aggregate pipeline editor from any panel when a
+		// collection is loaded. This way focus on sidebar doesn't block it.
+		if message.String() == "a" && a.documents.Collection() != "" {
+			var cmd tea.Cmd
+			a.documents, cmd = a.documents.Update(message)
+			a.focus = focusDocuments
+			a = a.syncFocus()
+			cmds = append(cmds, cmd)
+			return &a, tea.Batch(cmds...)
+		}
+
+		// I key: toggle indexes panel (from documents focus)
+		if message.String() == "I" && a.focus == focusDocuments {
+			if a.showIndexes {
+				a.showIndexes = false
+				a = a.applyLayout()
+			} else {
+				a.showDetail = false
+				a.showIndexes = true
+				col := a.documents.Collection()
+				if col != "" {
+					// documents.Collection() returns "db > col"; derive db/col
+					db, c := a.currentDBCol()
+					var idxCmd tea.Cmd
+					a.indexes, idxCmd = a.indexes.Load(db, c)
+					cmds = append(cmds, idxCmd)
+				}
+				a.focus = focusIndexes
+				a = a.syncFocus()
+				a = a.applyLayout()
+			}
+			return &a, tea.Batch(cmds...)
 		}
 
 		// route to focused panel
@@ -210,9 +308,13 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			a.detail, cmd = a.detail.Update(message)
 			cmds = append(cmds, cmd)
+		case focusIndexes:
+			var cmd tea.Cmd
+			a.indexes, cmd = a.indexes.Update(message)
+			cmds = append(cmds, cmd)
 		}
 
-	// ── async DB results ───────────────────────────────────────────────────
+	// ── async DB results ───────────────────────────────────────────────────────
 	case msg.DatabasesLoaded:
 		var cmd tea.Cmd
 		a.sidebar, cmd = a.sidebar.Update(message)
@@ -229,20 +331,23 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.sidebar, cmd = a.sidebar.Update(message)
 		cmds = append(cmds, cmd)
 
-	// ── collection selected → load documents, clear detail ────────────────
+	// ── collection selected → load documents, clear detail/indexes ─────────────
 	case msg.CollectionSelected:
 		a.showDetail = false
+		a.showIndexes = false
 		a.focus = focusDocuments
 		a = a.syncFocus()
 		var docCmd, sbCmd, dtCmd tea.Cmd
 		a.documents, docCmd = a.documents.Update(message)
 		a.statusbar, sbCmd = a.statusbar.Update(message)
 		a.detail, dtCmd = a.detail.Update(message)
+		a.indexes, _ = a.indexes.Update(message)
 		a = a.applyLayout()
 		cmds = append(cmds, docCmd, sbCmd, dtCmd)
 
-	// ── document selected → open detail panel ─────────────────────────────
+	// ── document selected → open detail panel ──────────────────────────────────
 	case msg.DocumentSelected:
+		a.showIndexes = false
 		if !a.showDetail {
 			a.showDetail = true
 			a = a.applyLayout()
@@ -253,7 +358,7 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.detail, cmd = a.detail.Update(message)
 		cmds = append(cmds, cmd)
 
-	// ── page of documents loaded ───────────────────────────────────────────
+	// ── page of documents loaded ───────────────────────────────────────────────
 	case msg.DocumentsLoaded:
 		var docCmd, sbCmd tea.Cmd
 		a.documents, docCmd = a.documents.Update(message)
@@ -266,7 +371,76 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar, sbCmd = a.statusbar.Update(message)
 		cmds = append(cmds, docCmd, sbCmd)
 
-	// ── CRUD results ───────────────────────────────────────────────────────
+	// ── pipeline ready: editor closed, fire the DB query ──────────────────────
+	case msg.PipelineReady:
+		var docCmd, sbCmd tea.Cmd
+		a.documents, docCmd = a.documents.Update(message)
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  "pipeline error: " + message.Err.Error(),
+				IsErr: true,
+			})
+		} else {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: "running aggregate…",
+			})
+		}
+		cmds = append(cmds, docCmd, sbCmd)
+
+	// ── aggregate results returned from DB ─────────────────────────────────────
+	case msg.AggregateResult:
+		var docCmd, sbCmd tea.Cmd
+		a.documents, docCmd = a.documents.Update(message)
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  "aggregate error: " + message.Err.Error(),
+				IsErr: true,
+			})
+		} else {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: fmt.Sprintf("aggregate: %d results", len(message.Docs)),
+			})
+		}
+		cmds = append(cmds, docCmd, sbCmd)
+
+	// ── index panel results ────────────────────────────────────────────────────
+	case msg.IndexesLoaded:
+		var cmd tea.Cmd
+		a.indexes, cmd = a.indexes.Update(message)
+		if message.Err != nil {
+			a.statusbar, _ = a.statusbar.Update(msg.StatusUpdate{
+				Text:  "indexes error: " + message.Err.Error(),
+				IsErr: true,
+			})
+		}
+		cmds = append(cmds, cmd)
+
+	case msg.IndexEditorDone:
+		var cmd tea.Cmd
+		a.indexes, cmd = a.indexes.Update(message)
+		cmds = append(cmds, cmd)
+
+	case msg.IndexCreated:
+		var idxCmd, sbCmd tea.Cmd
+		a.indexes, idxCmd = a.indexes.Update(message)
+		text, isErr := "index created: "+message.Name, false
+		if message.Err != nil {
+			text, isErr = "create index failed: "+message.Err.Error(), true
+		}
+		a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: text, IsErr: isErr})
+		cmds = append(cmds, idxCmd, sbCmd)
+
+	case msg.IndexDropped:
+		var idxCmd, sbCmd tea.Cmd
+		a.indexes, idxCmd = a.indexes.Update(message)
+		text, isErr := "index dropped", false
+		if message.Err != nil {
+			text, isErr = "drop index failed: "+message.Err.Error(), true
+		}
+		a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: text, IsErr: isErr})
+		cmds = append(cmds, idxCmd, sbCmd)
+
+	// ── CRUD results ───────────────────────────────────────────────────────────
 	case msg.EditorDone:
 		var cmd tea.Cmd
 		a.documents, cmd = a.documents.Update(message)
@@ -310,13 +484,14 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar, sbCmd = a.statusbar.Update(message)
 		cmds = append(cmds, sbCmd)
 
-	// ── everything else (spinner ticks, mouse, etc.) ───────────────────────
+	// ── everything else (spinner ticks, mouse, etc.) ───────────────────────────
 	default:
-		var sCmd, dCmd, dtCmd tea.Cmd
+		var sCmd, dCmd, dtCmd, idxCmd tea.Cmd
 		a.sidebar, sCmd = a.sidebar.Update(message)
 		a.documents, dCmd = a.documents.Update(message)
 		a.detail, dtCmd = a.detail.Update(message)
-		cmds = append(cmds, sCmd, dCmd, dtCmd)
+		a.indexes, idxCmd = a.indexes.Update(message)
+		cmds = append(cmds, sCmd, dCmd, dtCmd, idxCmd)
 	}
 
 	return &a, tea.Batch(cmds...)
@@ -328,17 +503,24 @@ func (a App) View() string {
 		return "initialising…"
 	}
 
-	sw, dw, dtw := a.panelWidths()
+	sw, dw, rightW := a.panelWidths()
 	mainH := a.height - 1 // 1 row for status bar
 
 	var row string
-	if a.showDetail {
+	switch {
+	case a.showDetail:
 		row = lipgloss.JoinHorizontal(lipgloss.Top,
 			a.sidebar.SetSize(sw, mainH).View(),
 			a.documents.SetSize(dw, mainH).View(),
-			a.detail.SetSize(dtw, mainH).View(),
+			a.detail.SetSize(rightW, mainH).View(),
 		)
-	} else {
+	case a.showIndexes:
+		row = lipgloss.JoinHorizontal(lipgloss.Top,
+			a.sidebar.SetSize(sw, mainH).View(),
+			a.documents.SetSize(dw, mainH).View(),
+			a.indexes.SetSize(rightW, mainH).View(),
+		)
+	default:
 		row = lipgloss.JoinHorizontal(lipgloss.Top,
 			a.sidebar.SetSize(sw, mainH).View(),
 			a.documents.SetSize(dw, mainH).View(),
@@ -351,15 +533,15 @@ func (a App) View() string {
 	)
 }
 
-// ── internal helpers ───────────────────────────────────────────────────────
+// ── internal helpers ───────────────────────────────────────────────────────────
 
-func (a App) panelWidths() (sidebar, docs, det int) {
+func (a App) panelWidths() (sidebarW, docs, right int) {
 	sw := sidebarWidth
 	if a.width < 100 {
 		sw = sidebarWidthS
 	}
 	remaining := a.width - sw
-	if a.showDetail {
+	if a.showDetail || a.showIndexes {
 		dw := docsWithDetail
 		if remaining < docsWithDetail+30 {
 			dw = remaining / 3
@@ -373,6 +555,7 @@ func (a App) syncFocus() App {
 	a.sidebar = a.sidebar.SetFocused(a.focus == focusSidebar)
 	a.documents = a.documents.SetFocused(a.focus == focusDocuments)
 	a.detail = a.detail.SetFocused(a.focus == focusDetail)
+	a.indexes = a.indexes.SetFocused(a.focus == focusIndexes)
 	return a
 }
 
@@ -380,13 +563,32 @@ func (a App) applyLayout() App {
 	if a.width == 0 {
 		return a
 	}
-	sw, dw, dtw := a.panelWidths()
+	sw, dw, rightW := a.panelWidths()
 	mainH := a.height - 1
 	a.sidebar = a.sidebar.SetSize(sw, mainH)
 	a.documents = a.documents.SetSize(dw, mainH)
 	if a.showDetail {
-		a.detail = a.detail.SetSize(dtw, mainH)
+		a.detail = a.detail.SetSize(rightW, mainH)
+	}
+	if a.showIndexes {
+		a.indexes = a.indexes.SetSize(rightW, mainH)
 	}
 	a.statusbar = a.statusbar.SetWidth(a.width)
 	return a
+}
+
+// currentDBCol extracts the current db and collection from documents panel.
+func (a App) currentDBCol() (db, col string) {
+	// documents.Collection() returns "db > col"
+	s := a.documents.Collection()
+	if s == "" {
+		return "", ""
+	}
+	// find " > " separator
+	for i := 0; i < len(s)-2; i++ {
+		if s[i] == ' ' && s[i+1] == '>' && s[i+2] == ' ' {
+			return s[:i], s[i+3:]
+		}
+	}
+	return s, ""
 }
