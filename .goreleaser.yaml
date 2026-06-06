@@ -56,7 +56,7 @@ release:
   prerelease: auto
   name_template: "v{{.Version}}"
 
-brews:
+homebrew_taps:
   - name: lazymongo
     repository:
       owner: saheersk
