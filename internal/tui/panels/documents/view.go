@@ -48,9 +48,9 @@ func (m Model) renderInner() string {
 		title += " " + m.th.StatusPager.Render("[s: "+short+"]")
 	}
 
-	header := m.th.TableHeader.
+	header := m.th.PanelTitle.
 		Width(m.width - 4).
-		Render(title)
+		Render("  " + title)
 
 	innerH := m.height - 2
 	if innerH < 3 {
@@ -89,9 +89,10 @@ func (m Model) renderInner() string {
 	colWidths := distributeWidths(m.columns, innerW)
 
 	colHeader := m.renderHeaderRow(colWidths)
+	divider := m.th.TableDivider.Render(strings.Repeat("─", m.width-4))
 
-	// visibleRows: subtract 1 extra when input bar is visible (replaces pager).
-	visibleRows := m.height - 6 // border(2) + title(1) + blank(1) + colheader(1) + bottom(1)
+	// visibleRows: border(2) + title(1) + blank(1) + colheader(1) + divider(1) + bottom(1)
+	visibleRows := m.height - 7
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
@@ -113,6 +114,7 @@ func (m Model) renderInner() string {
 		header,
 		"",
 		colHeader,
+		divider,
 		strings.Join(rows, "\n"),
 		bottom,
 	)
@@ -207,7 +209,7 @@ func (m Model) renderHeaderRow(widths []int) string {
 			parts = append(parts, util.PadRight(col, widths[i]))
 		}
 	}
-	return m.th.TableHeader.Render("  " + strings.Join(parts, " "))
+	return m.th.ColHeader.Render("  " + strings.Join(parts, " "))
 }
 
 func (m Model) renderDocRow(idx int, widths []int) string {

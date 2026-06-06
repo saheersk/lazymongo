@@ -3,6 +3,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/saheersk/lazymongo/internal/config"
@@ -12,9 +13,12 @@ import (
 )
 
 var (
-	flagURI  string
-	flagHost string
-	flagPort int
+	flagURI     string
+	flagHost    string
+	flagPort    int
+	flagProfile string
+	flagSave    string
+	flagTheme   string
 
 	buildVersion = "dev"
 	buildCommit  = "none"
@@ -29,15 +33,20 @@ func SetVersion(version, commit, date string) {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "lazymongo",
+	Use:   "lazymongo [profile]",
 	Short: "A terminal UI for MongoDB — like lazygit, but for Mongo",
 	Long: `lazymongo is a fast, keyboard-driven TUI for browsing and editing MongoDB.
 
 Connect with a URI:
   lazymongo --uri mongodb://localhost:27017
 
-Or use a saved profile from ~/.config/lazymongo/config.yaml:
-  lazymongo`,
+Save a named profile:
+  lazymongo --uri mongodb://localhost:27017 --save local
+
+Load a saved profile:
+  lazymongo --profile local
+  lazymongo local`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runTUI,
 }
 
@@ -50,16 +59,32 @@ func init() {
 	rootCmd.Flags().StringVar(&flagURI, "uri", "", "MongoDB connection URI (overrides config)")
 	rootCmd.Flags().StringVar(&flagHost, "host", "", "MongoDB host (default: localhost)")
 	rootCmd.Flags().IntVar(&flagPort, "port", 0, "MongoDB port (default: 27017)")
+	rootCmd.Flags().StringVar(&flagProfile, "profile", "", "Named connection profile from config")
+	rootCmd.Flags().StringVar(&flagSave, "save", "", "Save connection as named profile")
+	rootCmd.Flags().StringVar(&flagTheme, "theme", "", "Color theme (catppuccin, high-contrast, tokyo-night, nord, dracula)")
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", buildVersion, buildCommit, buildDate)
 }
 
-func runTUI(cmd *cobra.Command, _ []string) error {
+func runTUI(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	uri := resolveURI(cfg)
+	// Positional arg is a profile name shorthand.
+	if len(args) == 1 && flagProfile == "" {
+		flagProfile = args[0]
+	}
+
+	uri, themeName := resolveURIAndTheme(cfg)
+
+	// --save: persist the profile before connecting, then continue.
+	if flagSave != "" {
+		if err := config.SaveProfile(flagSave, uri, themeName); err != nil {
+			return fmt.Errorf("saving profile %q: %w", flagSave, err)
+		}
+		fmt.Fprintf(os.Stderr, "profile %q saved\n", flagSave)
+	}
 
 	client, err := mongoClient.NewClient(uri)
 	if err != nil {
@@ -67,7 +92,7 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 	}
 	defer client.Disconnect()
 
-	app := tui.New(client)
+	app := tui.New(client, themeName)
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
@@ -77,13 +102,31 @@ func runTUI(cmd *cobra.Command, _ []string) error {
 	return err
 }
 
-// resolveURI picks the connection URI in priority order:
-// flag > config default > localhost fallback.
-func resolveURI(cfg *config.Config) string {
-	if flagURI != "" {
-		return flagURI
+// resolveURIAndTheme picks URI and theme in priority order:
+// flag > named profile > config default > localhost fallback.
+func resolveURIAndTheme(cfg *config.Config) (uri, theme string) {
+	// Explicit --theme flag always wins for the theme.
+	theme = flagTheme
+
+	// Named profile resolution.
+	if flagProfile != "" {
+		if conn := cfg.FindConnection(flagProfile); conn != nil {
+			if flagURI == "" {
+				uri = conn.URI
+			}
+			if theme == "" {
+				theme = conn.Theme
+			}
+		}
 	}
-	if flagHost != "" || flagPort != 0 {
+
+	// --uri flag overrides profile URI.
+	if flagURI != "" {
+		uri = flagURI
+	}
+
+	// --host / --port flags.
+	if uri == "" && (flagHost != "" || flagPort != 0) {
 		host := flagHost
 		if host == "" {
 			host = "localhost"
@@ -92,10 +135,22 @@ func resolveURI(cfg *config.Config) string {
 		if port == 0 {
 			port = 27017
 		}
-		return fmt.Sprintf("mongodb://%s:%d", host, port)
+		uri = fmt.Sprintf("mongodb://%s:%d", host, port)
 	}
-	if cfg.HasDefaultConnection() {
-		return cfg.DefaultConnection().URI
+
+	// Fall back to config default connection.
+	if uri == "" && cfg.HasDefaultConnection() {
+		def := cfg.DefaultConnection()
+		uri = def.URI
+		if theme == "" {
+			theme = def.Theme
+		}
 	}
-	return "mongodb://localhost:27017"
+
+	// Final fallback.
+	if uri == "" {
+		uri = "mongodb://localhost:27017"
+	}
+
+	return uri, theme
 }

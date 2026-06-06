@@ -28,7 +28,7 @@ func (m Model) renderInner() string {
 	innerW := m.width - 4
 
 	if m.doc == nil {
-		header := m.th.TableHeader.Width(innerW).Render("DOCUMENT")
+		header := m.th.PanelTitle.Width(innerW).Render("  DOCUMENT")
 		return header + "\n\n" + m.th.DimText.Render("  press enter on a document")
 	}
 
@@ -43,8 +43,8 @@ func (m Model) renderInner() string {
 	if padding < 1 {
 		padding = 1
 	}
-	header := m.th.TableHeader.Width(innerW).Render(
-		title +
+	header := m.th.PanelTitle.Width(innerW).Render(
+		"  " + title +
 			strings.Repeat(" ", padding) +
 			m.th.DimText.Render(idStr) +
 			"  " +

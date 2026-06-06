@@ -33,9 +33,9 @@ func (m Model) renderInner() string {
 		title += fmt.Sprintf("  (%d docs, %d idx)", m.stats.DocCount, m.stats.IndexCount)
 	}
 
-	header := m.th.TableHeader.
+	header := m.th.PanelTitle.
 		Width(m.width - 4).
-		Render(title)
+		Render("  " + title)
 
 	if m.loading {
 		return lipgloss.JoinVertical(lipgloss.Left,

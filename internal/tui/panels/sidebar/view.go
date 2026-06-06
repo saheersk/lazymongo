@@ -3,11 +3,13 @@ package sidebar
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
-	arrowRight = "▶"
-	arrowDown  = "▼"
+	arrowRight = "▸"
+	arrowDown  = "▾"
 	bullet     = "●"
 	indent     = "  "
 )
@@ -28,14 +30,12 @@ func (m Model) View() string {
 }
 
 func (m Model) renderInner() string {
-	header := m.th.TableHeader.
-		Width(m.width - 4).
-		Render("DATABASES")
+	innerW := m.width - 4
+	header := m.th.PanelTitle.Width(innerW).Render("  DATABASES")
 
-	// Bottom bar: search input when active, key hints otherwise.
 	bottomBar := m.renderBottomBar()
 
-	// innerH = rows inside the border; used to pin bottomBar to the absolute bottom.
+	// innerH = rows inside the border (excl. border lines themselves)
 	innerH := m.height - 2
 	if innerH < 3 {
 		innerH = 3
@@ -65,7 +65,7 @@ func (m Model) renderInner() string {
 		return strings.Join(rows, "\n")
 	}
 
-	// Rows available for items: innerH − header(1) − blank(1) − bottomBar(1)
+	// Rows: header(1) + spacer(1) + items... + bottomBar(1)
 	visibleRows := innerH - 3
 	if visibleRows < 1 {
 		visibleRows = 1
@@ -84,20 +84,31 @@ func (m Model) renderInner() string {
 }
 
 // renderBottomBar returns a search input line when searching, or a hint line otherwise.
+// Hints are progressively shortened so the bar never exceeds the panel width.
 func (m Model) renderBottomBar() string {
 	if m.searchMode {
-		prompt := m.th.StatusFilter.Render("/ ")
-		return "  " + prompt + m.searchInput.View()
+		prompt := m.th.StatusFilter.Render("/")
+		return " " + prompt + " " + m.searchInput.View()
 	}
 	k := func(s string) string { return m.th.HelpKey.Render(s) }
 	d := func(s string) string { return m.th.HelpDesc.Render(s) }
-	return "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help")
+	avail := m.width - 4
+
+	full := "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help") + "  " + k("T") + " " + d("theme")
+	if lipgloss.Width(full) <= avail {
+		return full
+	}
+	med := "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help")
+	if lipgloss.Width(med) <= avail {
+		return med
+	}
+	return "  " + k("/") + "  " + k("?") + "  " + k("T")
 }
 
 // padToBottom pads rows with blank lines then appends bottomBar so it is
 // pinned to the absolute bottom of the inner panel area (lazygit style).
 func (m Model) padToBottom(rows []string, innerH int, bottomBar string) []string {
-	filler := innerH - len(rows) - 1 // -1 reserves the last row for bottomBar
+	filler := innerH - len(rows) - 1
 	for i := 0; i < filler; i++ {
 		rows = append(rows, "")
 	}
@@ -107,34 +118,31 @@ func (m Model) padToBottom(rows []string, innerH int, bottomBar string) []string
 func (m Model) renderVisibleItem(idx int, visible []treeItem) string {
 	it := visible[idx]
 	isCursor := idx == m.cursor
-	maxW := m.width - 6
+	innerW := m.width - 4
 
-	var line string
 	switch it.kind {
 	case kindDatabase:
 		arrow := arrowRight
 		if it.expanded {
 			arrow = arrowDown
 		}
-		label := fmt.Sprintf("%s %s", arrow, it.name)
-		line = truncate(label, maxW)
+		label := fmt.Sprintf("  %s %s", arrow, it.name)
+		label = truncate(label, innerW)
 		if isCursor {
-			line = m.th.CursorItem.Render(line)
-		} else {
-			line = m.th.DatabaseItem.Render(line)
+			return m.th.CursorItem.Width(innerW).Render(label)
 		}
+		return m.th.DatabaseItem.Render(label)
 
 	case kindCollection:
-		label := indent + bullet + " " + it.name
-		line = truncate(label, maxW)
+		label := "    " + bullet + " " + it.name
+		label = truncate(label, innerW)
 		if isCursor {
-			line = m.th.CursorItem.PaddingLeft(0).Render(line)
-		} else {
-			line = m.th.CollectionItem.PaddingLeft(0).Render(line)
+			return m.th.CursorItem.Width(innerW).Render(label)
 		}
+		return m.th.CollectionItem.Render(label)
 	}
 
-	return "  " + line
+	return ""
 }
 
 func viewportWindow(cursor, total, rows int) (int, int) {

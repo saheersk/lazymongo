@@ -90,22 +90,27 @@ func (m Model) View() string {
 		if m.flashErr {
 			text = m.th.ErrText.Render(text)
 		}
-		return m.th.StatusBar.Width(m.width).Render(" " + text)
+		return m.th.StatusBar.Width(m.width).Render("  " + text)
 	}
 
-	left := m.th.StatusConn.Render(" ● " + truncURI(m.connURI))
+	sep := m.th.StatusBar.Render("  ")
+
+	conn := m.th.StatusConn.Render("◆ " + truncURI(m.connURI))
+	left := m.th.StatusBar.Render(" ") + conn
 
 	var mid string
 	if m.db != "" {
-		path := m.db
+		db := m.th.StatusBar.Render(m.db)
 		if m.collection != "" {
-			path += " › " + m.collection
+			col := m.th.StatusPath.Render(m.collection)
+			mid = sep + db + m.th.StatusBar.Render(" › ") + col
+		} else {
+			mid = sep + db
 		}
-		mid = m.th.StatusPath.Render("  " + path + "  ")
 	}
 
 	if m.filter != "" {
-		mid += m.th.StatusFilter.Render(" ["+m.filter+"]  ")
+		mid += m.th.StatusFilter.Render("  ⟨" + m.filter + "⟩")
 	}
 
 	var right string
@@ -115,7 +120,6 @@ func (m Model) View() string {
 		)
 	}
 
-	// fill gap between left+mid and right
 	leftMid := left + mid
 	gap := m.width - lipgloss.Width(leftMid) - lipgloss.Width(right)
 	if gap < 0 {

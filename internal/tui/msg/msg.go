@@ -156,6 +156,12 @@ type DocumentDeleted struct {
 	Err error
 }
 
+// DatabaseDropped is dispatched after a drop-database attempt completes.
+type DatabaseDropped struct {
+	DB  string
+	Err error
+}
+
 // ---- status / error ----
 
 // StatusUpdate carries a transient message for the status bar.

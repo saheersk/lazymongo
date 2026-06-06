@@ -216,6 +216,44 @@ func (m Model) ActiveCollection() string {
 	return ""
 }
 
+// PreferredWidth returns the ideal sidebar panel width based on the longest
+// item name currently loaded, clamped to [20, 52].
+func (m Model) PreferredWidth() int {
+	longest := 10
+	check := func(n int) {
+		if n > longest {
+			longest = n
+		}
+	}
+	for _, it := range m.items {
+		switch it.kind {
+		case kindDatabase:
+			check(len([]rune(it.name)) + 6) // "  ▸ " + border/pad
+		case kindCollection:
+			check(len([]rune(it.name)) + 8) // "    ● " + border/pad
+		}
+	}
+	for _, cols := range m.allCols {
+		for _, col := range cols {
+			check(len([]rune(col.name)) + 8)
+		}
+	}
+	w := longest + 4 // 2 border + 2 inner margin
+	if w < 20 {
+		return 20
+	}
+	if w > 52 {
+		return 52
+	}
+	return w
+}
+
+// Refresh reloads the database list (equivalent to pressing R).
+func (m Model) Refresh() (Model, tea.Cmd) {
+	m.loading = true
+	return m, m.fetchDBs()
+}
+
 // ---- internal helpers ----
 
 func (m Model) clamp() Model {

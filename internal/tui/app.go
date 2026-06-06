@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	xansi "github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -30,12 +31,17 @@ const (
 	focusIndexes
 )
 
-// layout widths
-const (
-	sidebarWidth   = 28
-	sidebarWidthS  = 20 // narrow terminals
-	docsWithDetail = 38 // documents panel width when detail is open
-)
+// docsWithDetail is the documents panel width when the detail/index panel is visible.
+const docsWithDetail = 38
+
+// themeList is the ordered set of available themes shown in the picker.
+var themeList = []string{
+	"catppuccin",
+	"high-contrast",
+	"tokyo-night",
+	"nord",
+	"dracula",
+}
 
 // App is the root bubbletea model.
 type App struct {
@@ -44,6 +50,11 @@ type App struct {
 	showDetail    bool
 	showIndexes   bool
 	showHelp      bool
+	showTheme     bool // theme-picker overlay
+	themeCursor   int  // cursor inside theme picker
+	showDropDB    bool              // drop-database confirmation overlay
+	dropDBTarget  string            // database name being confirmed
+	dropInput     textinput.Model   // typed confirmation input
 
 	sidebar   sidebar.Model
 	documents documents.Model
@@ -51,14 +62,15 @@ type App struct {
 	indexes   indexes.Model
 	statusbar statusbar.Model
 
-	client *mongo.Client
-	th     *style.Theme
-	km     *keymap.Map
+	client    *mongo.Client
+	th        *style.Theme
+	km        *keymap.Map
+	themeName string
 }
 
 // New creates the root App with all panels initialised.
-func New(client *mongo.Client) *App {
-	th := style.Default()
+func New(client *mongo.Client, themeName string) *App {
+	th := style.ByName(themeName)
 	km := keymap.Default()
 
 	fetchDBs := func() tea.Cmd {
@@ -146,6 +158,7 @@ func New(client *mongo.Client) *App {
 		client:    client,
 		th:        th,
 		km:        km,
+		themeName: themeName,
 		focus:     focusSidebar,
 		sidebar:   sidebar.New(th, km, fetchDBs, fetchCols),
 		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, aggregateDocs),
@@ -188,6 +201,66 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.String() == "?" {
 			a.showHelp = true
+			return &a, nil
+		}
+
+		// theme picker overlay
+		if a.showTheme {
+			switch message.String() {
+			case "esc", "q", "T":
+				a.showTheme = false
+			case "j", "down":
+				a.themeCursor = (a.themeCursor + 1) % len(themeList)
+			case "k", "up":
+				a.themeCursor = (a.themeCursor - 1 + len(themeList)) % len(themeList)
+			case "enter":
+				selected := themeList[a.themeCursor]
+				// Mutate the theme in place so every panel picks it up instantly.
+				*a.th = *style.ByName(selected)
+				a.themeName = selected
+				a.showTheme = false
+			}
+			return &a, nil
+		}
+		if message.String() == "T" {
+			for i, name := range themeList {
+				if name == a.themeName {
+					a.themeCursor = i
+					break
+				}
+			}
+			a.showTheme = true
+			return &a, nil
+		}
+
+		// drop-database confirmation dialog
+		if a.showDropDB {
+			switch message.String() {
+			case "esc":
+				a.showDropDB = false
+				a.dropInput.SetValue("")
+			case "enter":
+				typed := a.dropInput.Value()
+				if typed == a.dropDBTarget {
+					a.showDropDB = false
+					a.dropInput.SetValue("")
+					db := a.dropDBTarget
+					return &a, func() tea.Msg {
+						return msg.DatabaseDropped{DB: db, Err: a.client.DropDatabase(db)}
+					}
+				}
+				// Wrong name — flash error, leave dialog open.
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+					Text:  "name mismatch — type the exact database name",
+					IsErr: true,
+				})
+				return &a, sbCmd
+			default:
+				var tiCmd tea.Cmd
+				a.dropInput, tiCmd = a.dropInput.Update(message)
+				return &a, tiCmd
+			}
 			return &a, nil
 		}
 
@@ -313,6 +386,20 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				a = a.applyLayout()
 			}
 			return &a, tea.Batch(cmds...)
+		}
+
+		// D on a database in the sidebar → open drop confirmation overlay.
+		if message.String() == "D" && a.focus == focusSidebar && !a.sidebar.InSearchMode() {
+			if db := a.sidebar.ActiveDB(); db != "" {
+				ti := textinput.New()
+				ti.Placeholder = db
+				ti.CharLimit = 128
+				a.dropDBTarget = db
+				a.dropInput = ti
+				a.showDropDB = true
+				return &a, a.dropInput.Focus()
+			}
+			return &a, nil
 		}
 
 		// route to focused panel
@@ -500,12 +587,29 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: text, IsErr: isErr})
 		cmds = append(cmds, docCmd, sbCmd)
 
+	case msg.DatabaseDropped:
+		var sbCmd tea.Cmd
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  fmt.Sprintf("drop %q failed: %v", message.DB, message.Err),
+				IsErr: true,
+			})
+			cmds = append(cmds, sbCmd)
+		} else {
+			var sCmd tea.Cmd
+			a.sidebar, sCmd = a.sidebar.Refresh()
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: fmt.Sprintf("dropped database %q", message.DB),
+			})
+			cmds = append(cmds, sCmd, sbCmd)
+		}
+
 	case msg.StatusUpdate:
 		var sbCmd tea.Cmd
 		a.statusbar, sbCmd = a.statusbar.Update(message)
 		cmds = append(cmds, sbCmd)
 
-	// ── everything else (spinner ticks, mouse, etc.) ───────────────────────────
+	// ── everything else (spinner ticks, cursor blinks, mouse, etc.) ──────────────
 	default:
 		var sCmd, dCmd, dtCmd, idxCmd tea.Cmd
 		a.sidebar, sCmd = a.sidebar.Update(message)
@@ -513,6 +617,11 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.detail, dtCmd = a.detail.Update(message)
 		a.indexes, idxCmd = a.indexes.Update(message)
 		cmds = append(cmds, sCmd, dCmd, dtCmd, idxCmd)
+		if a.showDropDB {
+			var tiCmd tea.Cmd
+			a.dropInput, tiCmd = a.dropInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
 	}
 
 	return &a, tea.Batch(cmds...)
@@ -554,7 +663,13 @@ func (a App) View() string {
 	)
 
 	if a.showHelp {
-		return renderHelp(base, a.width, a.height, a.th)
+		return renderHelp(base, a.width, a.height, a.th, a.themeName)
+	}
+	if a.showTheme {
+		return renderThemePicker(base, a.width, a.height, a.th, a.themeName, a.themeCursor)
+	}
+	if a.showDropDB {
+		return renderDropDB(base, a.width, a.height, a.th, a.dropDBTarget, a.dropInput.View())
 	}
 	return base
 }
@@ -562,10 +677,8 @@ func (a App) View() string {
 // ── internal helpers ───────────────────────────────────────────────────────────
 
 func (a App) panelWidths() (sidebarW, docs, right int) {
-	sw := sidebarWidth
-	if a.width < 100 {
-		sw = sidebarWidthS
-	}
+	// Derive sidebar width from the longest item name currently loaded.
+	sw := a.sidebar.PreferredWidth()
 	remaining := a.width - sw
 	if a.showDetail || a.showIndexes {
 		dw := docsWithDetail
@@ -604,75 +717,12 @@ func (a App) applyLayout() App {
 }
 
 // renderHelp overlays a centred help panel on the dimmed base view (lazygit-style).
-func renderHelp(base string, w, h int, th *style.Theme) string {
-	box := buildHelpBox(w, h, th)
-
-	boxLines := strings.Split(box, "\n")
-	bh := len(boxLines)
-	bw := lipgloss.Width(boxLines[0])
-
-	startY := (h - bh) / 2
-	if startY < 0 {
-		startY = 0
-	}
-	startX := (w - bw) / 2
-	if startX < 0 {
-		startX = 0
-	}
-
-	// Dim style applied to base content that shows through the overlay.
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-	baseLines := strings.Split(base, "\n")
-	for len(baseLines) < h {
-		baseLines = append(baseLines, "")
-	}
-
-	out := make([]string, h)
-	for y := 0; y < h; y++ {
-		plain := xansi.Strip(baseLines[y])
-		// Pad / trim to exactly w visible chars.
-		vw := lipgloss.Width(plain)
-		if vw < w {
-			plain += strings.Repeat(" ", w-vw)
-		} else if vw > w {
-			plain = xansi.Truncate(plain, w, "")
-		}
-
-		if y < startY || y >= startY+bh {
-			out[y] = dim.Render(plain)
-			continue
-		}
-
-		bi := y - startY
-
-		// Left section: base chars before the box.
-		left := xansi.Truncate(plain, startX, "")
-		lw := lipgloss.Width(left)
-		if lw < startX {
-			left += strings.Repeat(" ", startX-lw)
-		}
-
-		// Right section: base chars after the box.
-		right := xansi.TruncateLeft(plain, startX+bw, "")
-		rightW := w - startX - bw
-		if rightW > 0 {
-			rpw := lipgloss.Width(right)
-			if rpw < rightW {
-				right += strings.Repeat(" ", rightW-rpw)
-			}
-		} else {
-			right = ""
-		}
-
-		out[y] = dim.Render(left) + boxLines[bi] + dim.Render(right)
-	}
-
-	return strings.Join(out, "\n")
+func renderHelp(base string, w, h int, th *style.Theme, themeName string) string {
+	return centerOverlay(base, buildHelpBox(w, h, th, themeName), w, h)
 }
 
 // buildHelpBox returns the rendered help box string (without positioning).
-func buildHelpBox(w, h int, th *style.Theme) string {
+func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 	type section struct {
 		title string
 		rows  [][2]string
@@ -680,6 +730,7 @@ func buildHelpBox(w, h int, th *style.Theme) string {
 	sections := []section{
 		{"Global", [][2]string{
 			{"?", "toggle this help"},
+			{"T", "change color theme"},
 			{"h / ←", "focus sidebar"},
 			{"l / →", "focus documents"},
 			{"esc", "close panel / go back"},
@@ -690,6 +741,7 @@ func buildHelpBox(w, h int, th *style.Theme) string {
 			{"enter", "expand db / select collection"},
 			{"/", "search  (esc to close)"},
 			{"db:col", "filter by db and collection"},
+			{"D", "drop database (type name to confirm)"},
 			{"R", "refresh list"},
 		}},
 		{"Documents", [][2]string{
@@ -715,40 +767,208 @@ func buildHelpBox(w, h int, th *style.Theme) string {
 		}},
 	}
 
+	boxW := 72
+	if w < boxW+8 {
+		boxW = w - 8
+	}
+	if boxW < 44 {
+		boxW = 44
+	}
+
+	// Title bar: full-width colored header
+	themeTag := "theme: " + themeName + "  "
+	titleText := "  KEY BINDINGS"
+	// pad between title and theme tag
+	padW := boxW - len(titleText) - len(themeTag)
+	if padW < 1 {
+		padW = 1
+	}
+	titleLine := th.HelpTitle.Width(boxW).Render(
+		titleText + strings.Repeat(" ", padW) + themeTag,
+	)
+
 	var lines []string
 	lines = append(lines,
-		th.TableHeader.Render("  KEY BINDINGS"),
-		th.DimText.Render("  any key to close"),
+		titleLine,
+		th.DimText.Render("  press any key to close"),
 		"",
 	)
 	for _, sec := range sections {
-		lines = append(lines, th.TableHeader.Render("  "+sec.title))
+		lines = append(lines, th.HelpSection.Render("  ▸ "+sec.title))
 		for _, row := range sec.rows {
-			k := fmt.Sprintf("  %-18s", row[0])
+			k := fmt.Sprintf("  %-22s", row[0])
 			lines = append(lines, th.HelpKey.Render(k)+" "+th.HelpDesc.Render(row[1]))
 		}
 		lines = append(lines, "")
 	}
 
-	boxW := 54
-	if w < boxW+4 {
-		boxW = w - 4
-	}
 	maxInnerH := h - 4
 	if maxInnerH < 8 {
 		maxInnerH = 8
 	}
 	if len(lines) > maxInnerH {
 		lines = lines[:maxInnerH-1]
-		lines = append(lines, th.DimText.Render("  … see README for full list"))
+		lines = append(lines, th.DimText.Render("  … see README for full key list"))
 	}
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(th.HelpKey.GetForeground()).
 		Width(boxW).
-		Padding(0, 1).
 		Render(strings.Join(lines, "\n"))
+}
+
+// themeDisplayNames are the human-readable labels shown in the picker.
+var themeDisplayNames = map[string]string{
+	"catppuccin":    "Catppuccin   lavender / mocha",
+	"high-contrast": "High Contrast  green / amber",
+	"tokyo-night":   "Tokyo Night  blue / purple",
+	"nord":          "Nord         arctic blues",
+	"dracula":       "Dracula      purple / pink",
+}
+
+// renderDropDB overlays the drop-database confirmation dialog.
+// The user must type the exact database name before the drop is executed.
+func renderDropDB(base string, w, h int, th *style.Theme, dbName, inputView string) string {
+	boxW := 56
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 34 {
+		boxW = 34
+	}
+
+	dangerTitle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(th.ErrText.GetForeground()).
+		Background(lipgloss.Color("#3b0000")).
+		Width(boxW).
+		Render("  ⚠  DROP DATABASE")
+
+	dbLabel := th.ErrText.Render("  " + dbName)
+
+	var rows []string
+	rows = append(rows,
+		dangerTitle,
+		"",
+		th.DimText.Render("  This will permanently delete all data in:"),
+		dbLabel,
+		"",
+		th.DimText.Render("  Type the database name to confirm:"),
+		"  "+inputView,
+		"",
+		th.DimText.Render("  enter drop  esc cancel"),
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.ErrText.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// centerOverlay composites a rendered box string centred over the dimmed base.
+func centerOverlay(base, box string, w, h int) string {
+	boxLines := strings.Split(box, "\n")
+	bh := len(boxLines)
+	bw := lipgloss.Width(boxLines[0])
+	startY := (h - bh) / 2
+	if startY < 0 {
+		startY = 0
+	}
+	startX := (w - bw) / 2
+	if startX < 0 {
+		startX = 0
+	}
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	baseLines := strings.Split(base, "\n")
+	for len(baseLines) < h {
+		baseLines = append(baseLines, "")
+	}
+	out := make([]string, h)
+	for y := 0; y < h; y++ {
+		plain := xansi.Strip(baseLines[y])
+		vw := lipgloss.Width(plain)
+		if vw < w {
+			plain += strings.Repeat(" ", w-vw)
+		} else if vw > w {
+			plain = xansi.Truncate(plain, w, "")
+		}
+		if y < startY || y >= startY+bh {
+			out[y] = dim.Render(plain)
+			continue
+		}
+		bi := y - startY
+		left := xansi.Truncate(plain, startX, "")
+		lw := lipgloss.Width(left)
+		if lw < startX {
+			left += strings.Repeat(" ", startX-lw)
+		}
+		right := xansi.TruncateLeft(plain, startX+bw, "")
+		if rightW := w - startX - bw; rightW > 0 {
+			if rpw := lipgloss.Width(right); rpw < rightW {
+				right += strings.Repeat(" ", rightW-rpw)
+			}
+		} else {
+			right = ""
+		}
+		out[y] = dim.Render(left) + boxLines[bi] + dim.Render(right)
+	}
+	return strings.Join(out, "\n")
+}
+
+// renderThemePicker overlays the theme chooser on the dimmed base view.
+func renderThemePicker(base string, w, h int, th *style.Theme, current string, cursor int) string {
+	// Target 52 chars; shrink if terminal is narrower but keep ≥ 34.
+	boxW := 52
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 34 {
+		boxW = 34
+	}
+
+	// Max chars available for the label inside a row prefix of 4 chars.
+	labelMax := boxW - 4
+
+	var rows []string
+	titleLine := th.HelpTitle.Width(boxW).Render("  THEME")
+	rows = append(rows, titleLine, "")
+
+	for i, name := range themeList {
+		label := themeDisplayNames[name]
+		// Truncate label if it would overflow the box.
+		runes := []rune(label)
+		if len(runes) > labelMax {
+			label = string(runes[:labelMax-1]) + "…"
+		}
+		if i == cursor {
+			rows = append(rows, th.TableSelected.Width(boxW).Render("  ▶ "+label))
+		} else if name == current {
+			rows = append(rows, th.HelpSection.Render("  ● "+label))
+		} else {
+			rows = append(rows, th.DimText.Render("    "+label))
+		}
+	}
+
+	hint := "  j/k navigate  enter apply  esc cancel"
+	hintRunes := []rune(hint)
+	if len(hintRunes) > boxW {
+		hint = string(hintRunes[:boxW-1]) + "…"
+	}
+	rows = append(rows, "",
+		th.DimText.Render(hint),
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
 }
 
 // currentDBCol extracts the current db and collection from documents panel.

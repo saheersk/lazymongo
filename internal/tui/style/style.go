@@ -4,7 +4,6 @@ package style
 import "github.com/charmbracelet/lipgloss"
 
 // Theme centralises every lipgloss style used in the application.
-// Panels receive a *Theme at construction time and must not create ad-hoc styles.
 type Theme struct {
 	// borders
 	ActiveBorder   lipgloss.Style
@@ -17,7 +16,9 @@ type Theme struct {
 	CursorItem     lipgloss.Style
 
 	// document table
-	TableHeader   lipgloss.Style
+	PanelTitle    lipgloss.Style
+	ColHeader     lipgloss.Style
+	TableHeader   lipgloss.Style // alias of PanelTitle for backwards compat
 	TableRow      lipgloss.Style
 	TableRowAlt   lipgloss.Style
 	TableSelected lipgloss.Style
@@ -31,11 +32,13 @@ type Theme struct {
 	StatusPager  lipgloss.Style
 
 	// misc
-	Spinner  lipgloss.Style
-	ErrText  lipgloss.Style
-	DimText  lipgloss.Style
-	HelpKey  lipgloss.Style
-	HelpDesc lipgloss.Style
+	Spinner     lipgloss.Style
+	ErrText     lipgloss.Style
+	DimText     lipgloss.Style
+	HelpKey     lipgloss.Style
+	HelpDesc    lipgloss.Style
+	HelpTitle   lipgloss.Style // top title bar of the ? help overlay
+	HelpSection lipgloss.Style // section headers inside help overlay
 
 	// json syntax highlight
 	JSONKey     lipgloss.Style
@@ -47,99 +50,151 @@ type Theme struct {
 	JSONOID     lipgloss.Style
 }
 
-// Default returns a high-contrast dark theme.
-//
-// Palette:
-//
-//	bg:      #0e0e0e  (near-black)
-//	accent:  #00D4FF  (electric cyan)
-//	green:   #00FF9C  (neon green)
-//	yellow:  #FFD700  (gold)
-//	red:     #FF4C4C  (bright red)
-//	purple:  #C678DD  (soft purple)
-//	text:    #F0F0F0  (near-white)
-//	dim:     #666666
-func Default() *Theme {
-	bg := lipgloss.Color("#0e0e0e")
-	bgAlt := lipgloss.Color("#161616")
-	bgSel := lipgloss.Color("#1a2a3a")
-	bgStatus := lipgloss.Color("#111111")
-	borderActive := lipgloss.Color("#00D4FF")
-	borderIdle := lipgloss.Color("#333333")
-	accent := lipgloss.Color("#00D4FF")
-	green := lipgloss.Color("#00FF9C")
-	yellow := lipgloss.Color("#FFD700")
-	red := lipgloss.Color("#FF4C4C")
-	purple := lipgloss.Color("#C678DD")
-	text := lipgloss.Color("#F0F0F0")
-	dim := lipgloss.Color("#666666")
-	divider := lipgloss.Color("#444444")
+// ByName dispatches by theme name and returns the matching Theme.
+// Unknown names fall back to Catppuccin.
+func ByName(name string) *Theme {
+	switch name {
+	case "high-contrast":
+		return HighContrast()
+	case "tokyo-night":
+		return TokyoNight()
+	case "nord":
+		return Nord()
+	case "dracula":
+		return Dracula()
+	default:
+		return Catppuccin()
+	}
+}
 
-	_ = bg // used in TableRowAlt
+// Default returns the Catppuccin Mocha theme. Kept as an alias for
+// backwards-compatibility with existing call-sites.
+func Default() *Theme { return Catppuccin() }
+
+// Catppuccin returns a Catppuccin Mocha theme — the palette used by most
+// lazygit / lazydocker setups.
+//
+//	Reference: https://github.com/catppuccin/catppuccin
+//
+//	Crust:     #11111b  (deepest bg — status bar)
+//	Mantle:    #181825  (panel title bar bg)
+//	Base:      #1e1e2e  (main bg)
+//	Surface0:  #313244  (selection / alt-row bg)
+//	Overlay1:  #7f849c  (dim text)
+//	Subtext0:  #a6adc8  (secondary text)
+//	Text:      #cdd6f4  (primary text)
+//	Lavender:  #b4befe  (active border, panel titles)
+//	Blue:      #89b4fa  (col headers, JSON keys)
+//	Sapphire:  #74c7ec  (cursor fg, selected row fg)
+//	Green:     #a6e3a1  (connection indicator, strings)
+//	Yellow:    #f9e2af  (key bindings, warnings)
+//	Peach:     #fab387  (numbers)
+//	Maroon:    #eba0ac  (errors)
+//	Mauve:     #cba6f7  (OIDs)
+func Catppuccin() *Theme {
+	// backgrounds
+	bgCrust  := lipgloss.Color("#11111b") // status bar
+	bgMantle := lipgloss.Color("#181825") // panel title bar
+	bgSurf0  := lipgloss.Color("#313244") // selected / cursor row
+	bgSurf1  := lipgloss.Color("#24273a") // alt table row (very subtle)
+
+	// borders
+	borderActive   := lipgloss.Color("#b4befe") // Lavender — bright, clear
+	borderInactive := lipgloss.Color("#45475a") // Surface1 — visible but quiet
+
+	// text
+	text    := lipgloss.Color("#cdd6f4") // Text
+	textAlt := lipgloss.Color("#a6adc8") // Subtext0
+	dim     := lipgloss.Color("#6c7086") // Overlay1
+
+	// accent colours
+	lavender := lipgloss.Color("#b4befe")
+	blue     := lipgloss.Color("#89b4fa")
+	sapphire := lipgloss.Color("#74c7ec")
+	green    := lipgloss.Color("#a6e3a1")
+	yellow   := lipgloss.Color("#f9e2af")
+	peach    := lipgloss.Color("#fab387")
+	maroon   := lipgloss.Color("#eba0ac")
+	mauve    := lipgloss.Color("#cba6f7")
 
 	base := lipgloss.NewStyle()
 
 	return &Theme{
-		// ── borders ─────────────────────────────────────────────────────────
+		// ── borders ──────────────────────────────────────────────────────────
 		ActiveBorder: base.
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(borderActive),
 		InactiveBorder: base.
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(borderIdle),
+			BorderForeground(borderInactive),
 
-		// ── sidebar ──────────────────────────────────────────────────────────
+		// ── sidebar items ─────────────────────────────────────────────────────
 		DatabaseItem: base.
 			Bold(true).
 			Foreground(text),
 		CollectionItem: base.
-			Foreground(lipgloss.Color("#AAAAAA")).
-			PaddingLeft(2),
+			Foreground(textAlt),
 		SelectedItem: base.
-			Background(bgSel).
+			Background(bgSurf0).
 			Foreground(text),
+		// Full-width row highlight — background fills the row.
 		CursorItem: base.
-			Foreground(accent).
+			Background(bgSurf0).
+			Foreground(sapphire).
 			Bold(true),
 
-		// ── document table ────────────────────────────────────────────────────
+		// ── table ─────────────────────────────────────────────────────────────
+		// PanelTitle: title bar shown at the top of every panel.
+		// Uses a distinct background so the heading is always readable.
+		PanelTitle: base.
+			Bold(true).
+			Foreground(lavender).
+			Background(bgMantle),
+		// TableHeader kept as alias so older call-sites compile.
 		TableHeader: base.
 			Bold(true).
-			Foreground(accent).
-			Underline(true),
+			Foreground(lavender).
+			Background(bgMantle),
+		// ColHeader: column-name row inside the table.
+		ColHeader: base.
+			Bold(true).
+			Foreground(blue),
+
 		TableRow: base.
 			Foreground(text),
 		TableRowAlt: base.
-			Foreground(lipgloss.Color("#C8C8C8")).
-			Background(bgAlt),
+			Foreground(textAlt).
+			Background(bgSurf1),
 		TableSelected: base.
-			Background(bgSel).
-			Foreground(green).
+			Background(bgSurf0).
+			Foreground(sapphire).
 			Bold(true),
 		TableDivider: base.
-			Foreground(divider),
+			Foreground(borderInactive),
 
 		// ── status bar ────────────────────────────────────────────────────────
-		StatusBar:    base.Foreground(text).Background(bgStatus),
-		StatusConn:   base.Foreground(green).Background(bgStatus).Bold(true),
-		StatusPath:   base.Foreground(accent).Background(bgStatus).Bold(true),
-		StatusFilter: base.Foreground(yellow).Background(bgStatus),
-		StatusPager:  base.Foreground(lipgloss.Color("#AAAAAA")).Background(bgStatus),
+		StatusBar:    base.Foreground(textAlt).Background(bgCrust),
+		StatusConn:   base.Foreground(green).Background(bgCrust).Bold(true),
+		StatusPath:   base.Foreground(sapphire).Background(bgCrust).Bold(true),
+		StatusFilter: base.Foreground(yellow).Background(bgCrust),
+		StatusPager:  base.Foreground(dim).Background(bgCrust),
 
 		// ── misc ──────────────────────────────────────────────────────────────
-		Spinner:  base.Foreground(accent),
-		ErrText:  base.Foreground(red).Bold(true),
-		DimText:  base.Foreground(dim),
-		HelpKey:  base.Foreground(yellow).Bold(true),
-		HelpDesc: base.Foreground(dim),
+		Spinner:     base.Foreground(blue),
+		ErrText:     base.Foreground(maroon).Bold(true),
+		DimText:     base.Foreground(dim),
+		HelpKey:     base.Foreground(yellow).Bold(true),
+		HelpDesc:    base.Foreground(dim),
+		HelpTitle:   base.Bold(true).Foreground(lavender).Background(bgMantle),
+		HelpSection: base.Bold(true).Foreground(yellow),
 
 		// ── json syntax ───────────────────────────────────────────────────────
-		JSONKey:     base.Foreground(accent).Bold(true),
+		JSONKey:     base.Foreground(blue).Bold(true),
 		JSONString:  base.Foreground(green),
-		JSONNumber:  base.Foreground(yellow),
-		JSONBool:    base.Foreground(red),
+		JSONNumber:  base.Foreground(peach),
+		JSONBool:    base.Foreground(maroon),
 		JSONNull:    base.Foreground(dim),
 		JSONBracket: base.Foreground(text),
-		JSONOID:     base.Foreground(purple),
+		JSONOID:     base.Foreground(mauve),
 	}
 }

@@ -7,6 +7,13 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+// DropDatabase permanently removes a database and all its collections.
+func (c *Client) DropDatabase(name string) error {
+	ctx, cancel := opCtx()
+	defer cancel()
+	return c.inner.Database(name).Drop(ctx)
+}
+
 // ListDatabases returns metadata for every database visible to the client.
 func (c *Client) ListDatabases() ([]msg.DatabaseInfo, error) {
 	ctx, cancel := opCtx()
