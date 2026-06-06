@@ -27,9 +27,10 @@ type Model struct {
 	filter bson.M
 	sort   bson.D
 
-	focused bool
-	loading bool
-	err     error
+	focused       bool
+	loading       bool
+	pendingBottom bool // set by G; cursor jumps to last doc after page loads
+	err           error
 
 	width, height int
 

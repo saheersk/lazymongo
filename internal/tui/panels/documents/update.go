@@ -33,8 +33,11 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		m.docs = message.Result.Docs
 		m.total = message.Result.Total
 		m.page = message.Result.Page
-		// rebuild columns from current page of documents
 		m.columns = util.BuildColumns(m.docs, maxColumns(m.width))
+		if m.pendingBottom {
+			m.cursor = len(m.docs) - 1
+			m.pendingBottom = false
+		}
 		return m.clamp(), nil
 
 	case msg.FilterChanged:
@@ -95,6 +98,7 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.page = lastPage
 		m.cursor = 0
+		m.pendingBottom = true
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.loadPage(lastPage))
 
@@ -128,9 +132,35 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			return msg.DocumentSelected{Doc: doc}
 		}
+
+	case key.String() == "y":
+		doc := m.ActiveDoc()
+		if doc == nil {
+			return m, nil
+		}
+		id := util.FormatValue(doc["_id"])
+		_ = util.CopyToClipboard(id)
+		return m, statusCmd("copied _id: " + id)
+
+	case key.String() == "Y":
+		doc := m.ActiveDoc()
+		if doc == nil {
+			return m, nil
+		}
+		raw, err := util.BSONToJSON(doc)
+		if err == nil {
+			_ = util.CopyToClipboard(raw)
+		}
+		return m, statusCmd("copied document JSON to clipboard")
 	}
 
 	return m, nil
+}
+
+func statusCmd(text string) tea.Cmd {
+	return func() tea.Msg {
+		return msg.StatusUpdate{Text: text}
+	}
 }
 
 func isKey(km tea.KeyMsg, b interface{ Keys() []string }) bool {

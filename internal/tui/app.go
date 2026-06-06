@@ -10,6 +10,7 @@ import (
 	"github.com/saheersk/lazymongo/internal/mongo"
 	"github.com/saheersk/lazymongo/internal/tui/keymap"
 	"github.com/saheersk/lazymongo/internal/tui/msg"
+	"github.com/saheersk/lazymongo/internal/tui/panels/detail"
 	"github.com/saheersk/lazymongo/internal/tui/panels/documents"
 	"github.com/saheersk/lazymongo/internal/tui/panels/sidebar"
 	"github.com/saheersk/lazymongo/internal/tui/panels/statusbar"
@@ -21,16 +22,26 @@ type focusedPanel int
 
 const (
 	focusSidebar   focusedPanel = iota
-	focusDocuments              // Phase 2 will add focusDetail
+	focusDocuments
+	focusDetail
+)
+
+// layout widths
+const (
+	sidebarWidth  = 28
+	sidebarWidthS = 20 // narrow terminals
+	docsWithDetail = 38 // documents panel width when detail is open
 )
 
 // App is the root bubbletea model.
 type App struct {
 	width, height int
 	focus         focusedPanel
+	showDetail    bool
 
 	sidebar   sidebar.Model
 	documents documents.Model
+	detail    detail.Model
 	statusbar statusbar.Model
 
 	client *mongo.Client
@@ -76,6 +87,7 @@ func New(client *mongo.Client) *App {
 		focus:     focusSidebar,
 		sidebar:   sidebar.New(th, km, fetchDBs, fetchCols),
 		documents: documents.New(th, km, fetchPage),
+		detail:    detail.New(th, km),
 		statusbar: statusbar.New(th, client.URI()),
 	}
 }
@@ -85,6 +97,7 @@ func (a *App) Init() tea.Cmd {
 	return tea.Batch(
 		a.sidebar.Init(),
 		a.documents.Init(),
+		a.detail.Init(),
 		a.statusbar.Init(),
 	)
 }
@@ -95,29 +108,63 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch message := message.(type) {
 
+	// ── window resize ──────────────────────────────────────────────────────
 	case tea.WindowSizeMsg:
 		a.width = message.Width
 		a.height = message.Height
-		a = a.resizePanels()
+		a = a.applyLayout()
 		return &a, nil
 
+	// ── keyboard ───────────────────────────────────────────────────────────
 	case tea.KeyMsg:
-		// global keys always win
+		// global: quit
 		if message.String() == "q" || message.String() == "ctrl+c" {
 			return &a, tea.Quit
 		}
-		// focus switching
+
+		// global: focus left
 		if message.String() == "h" || message.String() == "left" {
-			a.focus = focusSidebar
+			switch a.focus {
+			case focusDetail:
+				a.focus = focusDocuments
+			default:
+				a.focus = focusSidebar
+			}
 			a = a.syncFocus()
 			return &a, nil
 		}
+
+		// global: focus right
 		if message.String() == "l" || message.String() == "right" {
-			if a.documents.Collection() != "" {
-				a.focus = focusDocuments
-				a = a.syncFocus()
+			switch a.focus {
+			case focusSidebar:
+				if a.documents.Collection() != "" {
+					a.focus = focusDocuments
+					a = a.syncFocus()
+				}
+			case focusDocuments:
+				if a.showDetail {
+					a.focus = focusDetail
+					a = a.syncFocus()
+				}
 			}
 			return &a, nil
+		}
+
+		// esc: close detail or go to sidebar
+		if message.String() == "esc" {
+			switch a.focus {
+			case focusDetail:
+				a.showDetail = false
+				a.focus = focusDocuments
+				a = a.syncFocus()
+				a = a.applyLayout()
+				return &a, nil
+			case focusDocuments:
+				a.focus = focusSidebar
+				a = a.syncFocus()
+				return &a, nil
+			}
 		}
 
 		// route to focused panel
@@ -130,20 +177,22 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			a.documents, cmd = a.documents.Update(message)
 			cmds = append(cmds, cmd)
+		case focusDetail:
+			var cmd tea.Cmd
+			a.detail, cmd = a.detail.Update(message)
+			cmds = append(cmds, cmd)
 		}
 
-	// ---- async results: route to relevant panels ----
-
+	// ── async DB results ───────────────────────────────────────────────────
 	case msg.DatabasesLoaded:
 		var cmd tea.Cmd
 		a.sidebar, cmd = a.sidebar.Update(message)
 		cmds = append(cmds, cmd)
 		if message.Err != nil {
-			var sbCmd tea.Cmd
-			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
-				Text: fmt.Sprintf("error: %v", message.Err), IsErr: true,
+			a.statusbar, _ = a.statusbar.Update(msg.StatusUpdate{
+				Text:  fmt.Sprintf("error: %v", message.Err),
+				IsErr: true,
 			})
-			cmds = append(cmds, sbCmd)
 		}
 
 	case msg.CollectionsLoaded:
@@ -151,15 +200,31 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.sidebar, cmd = a.sidebar.Update(message)
 		cmds = append(cmds, cmd)
 
+	// ── collection selected → load documents, clear detail ────────────────
 	case msg.CollectionSelected:
-		// move focus to documents panel and kick off load
+		a.showDetail = false
 		a.focus = focusDocuments
 		a = a.syncFocus()
-		var docCmd, sbCmd tea.Cmd
+		var docCmd, sbCmd, dtCmd tea.Cmd
 		a.documents, docCmd = a.documents.Update(message)
 		a.statusbar, sbCmd = a.statusbar.Update(message)
-		cmds = append(cmds, docCmd, sbCmd)
+		a.detail, dtCmd = a.detail.Update(message)
+		a = a.applyLayout()
+		cmds = append(cmds, docCmd, sbCmd, dtCmd)
 
+	// ── document selected → open detail panel ─────────────────────────────
+	case msg.DocumentSelected:
+		if !a.showDetail {
+			a.showDetail = true
+			a = a.applyLayout()
+		}
+		a.focus = focusDetail
+		a = a.syncFocus()
+		var cmd tea.Cmd
+		a.detail, cmd = a.detail.Update(message)
+		cmds = append(cmds, cmd)
+
+	// ── page of documents loaded ───────────────────────────────────────────
 	case msg.DocumentsLoaded:
 		var docCmd, sbCmd tea.Cmd
 		a.documents, docCmd = a.documents.Update(message)
@@ -177,12 +242,13 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar, sbCmd = a.statusbar.Update(message)
 		cmds = append(cmds, sbCmd)
 
+	// ── everything else (spinner ticks, mouse, etc.) ───────────────────────
 	default:
-		// spinner ticks etc. — forward to all panels
-		var sCmd, dCmd tea.Cmd
+		var sCmd, dCmd, dtCmd tea.Cmd
 		a.sidebar, sCmd = a.sidebar.Update(message)
 		a.documents, dCmd = a.documents.Update(message)
-		cmds = append(cmds, sCmd, dCmd)
+		a.detail, dtCmd = a.detail.Update(message)
+		cmds = append(cmds, sCmd, dCmd, dtCmd)
 	}
 
 	return &a, tea.Batch(cmds...)
@@ -191,21 +257,25 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 // View composes the full-screen layout.
 func (a App) View() string {
 	if a.width == 0 {
-		return "loading…"
+		return "initialising…"
 	}
 
-	sidebarW := 28
-	if a.width < 80 {
-		sidebarW = 20
+	sw, dw, dtw := a.panelWidths()
+	mainH := a.height - 1 // 1 row for status bar
+
+	var row string
+	if a.showDetail {
+		row = lipgloss.JoinHorizontal(lipgloss.Top,
+			a.sidebar.SetSize(sw, mainH).View(),
+			a.documents.SetSize(dw, mainH).View(),
+			a.detail.SetSize(dtw, mainH).View(),
+		)
+	} else {
+		row = lipgloss.JoinHorizontal(lipgloss.Top,
+			a.sidebar.SetSize(sw, mainH).View(),
+			a.documents.SetSize(dw, mainH).View(),
+		)
 	}
-	docsW := a.width - sidebarW
-
-	mainH := a.height - 1 // leave 1 row for status bar
-
-	row := lipgloss.JoinHorizontal(lipgloss.Top,
-		a.sidebar.SetSize(sidebarW, mainH).View(),
-		a.documents.SetSize(docsW, mainH).View(),
-	)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		row,
@@ -213,33 +283,42 @@ func (a App) View() string {
 	)
 }
 
-// ---- helpers ----
+// ── internal helpers ───────────────────────────────────────────────────────
+
+func (a App) panelWidths() (sidebar, docs, det int) {
+	sw := sidebarWidth
+	if a.width < 100 {
+		sw = sidebarWidthS
+	}
+	remaining := a.width - sw
+	if a.showDetail {
+		dw := docsWithDetail
+		if remaining < docsWithDetail+30 {
+			dw = remaining / 3
+		}
+		return sw, dw, remaining - dw
+	}
+	return sw, remaining, 0
+}
 
 func (a App) syncFocus() App {
 	a.sidebar = a.sidebar.SetFocused(a.focus == focusSidebar)
 	a.documents = a.documents.SetFocused(a.focus == focusDocuments)
+	a.detail = a.detail.SetFocused(a.focus == focusDetail)
 	return a
 }
 
-func (a App) resizePanels() App {
-	sidebarW := 28
-	if a.width < 80 {
-		sidebarW = 20
+func (a App) applyLayout() App {
+	if a.width == 0 {
+		return a
 	}
-	docsW := a.width - sidebarW
+	sw, dw, dtw := a.panelWidths()
 	mainH := a.height - 1
-
-	a.sidebar = a.sidebar.SetSize(sidebarW, mainH)
-	a.documents = a.documents.SetSize(docsW, mainH)
+	a.sidebar = a.sidebar.SetSize(sw, mainH)
+	a.documents = a.documents.SetSize(dw, mainH)
+	if a.showDetail {
+		a.detail = a.detail.SetSize(dtw, mainH)
+	}
 	a.statusbar = a.statusbar.SetWidth(a.width)
 	return a
-}
-
-// shortURI trims long URIs for display.
-func shortURI(uri string) string {
-	const max = 40
-	if len(uri) <= max {
-		return uri
-	}
-	return uri[:max-3] + "…"
 }
