@@ -97,9 +97,6 @@ func (m Model) renderItem(idx int) string {
 			arrow = arrowDown
 		}
 		label := fmt.Sprintf("%s %s", arrow, it.name)
-		if it.colsLoaded && it.expanded {
-			// show collection count hint
-		}
 		line = truncate(label, maxW)
 
 		if isCursor {

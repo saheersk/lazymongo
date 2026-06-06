@@ -206,29 +206,6 @@ func (m Model) toggleExpand(idx int) (Model, tea.Cmd) {
 		return m, m.fetchCols(it.name)
 	}
 
-	// Rebuild the flat list in-place for already-loaded dbs
-	m.applyCollections(it.name, nil) // no-op but triggers correct rebuild via applyCollections
-	// Simpler: just re-expand by reconstructing the flat list
-	var flat []treeItem
-	skipDB := ""
-	colsForDB := map[string][]treeItem{}
-	for _, item := range m.items {
-		if item.kind == kindCollection {
-			colsForDB[item.db] = append(colsForDB[item.db], item)
-		}
-	}
-	for _, item := range m.items {
-		if item.kind == kindCollection && item.db != skipDB {
-			continue
-		}
-		if item.kind == kindDatabase {
-			flat = append(flat, item)
-			if item.expanded {
-				flat = append(flat, colsForDB[item.name]...)
-			}
-		}
-	}
-	// If the above logic is confusing, use a cleaner approach:
 	m = m.rebuildFlat()
 	return m, nil
 }

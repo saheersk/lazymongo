@@ -20,13 +20,21 @@ func TestAggregateKey_NonNilCmd(t *testing.T) {
 	}
 }
 
-func TestAggregateKey_NoDB_NilCmd(t *testing.T) {
+func TestAggregateKey_NoDB_StatusCmd(t *testing.T) {
 	m := newTestModel(nil, nil, nil, nil)
 	m.db = "" // no collection selected
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
-	if cmd != nil {
-		t.Errorf("expected nil cmd with no collection, got %T", cmd)
+	if cmd == nil {
+		t.Fatal("expected a status cmd when no collection is selected, got nil")
+	}
+	result := cmd()
+	su, ok := result.(msg.StatusUpdate)
+	if !ok {
+		t.Fatalf("expected StatusUpdate, got %T", result)
+	}
+	if su.Text == "" {
+		t.Error("StatusUpdate.Text should not be empty")
 	}
 }
 

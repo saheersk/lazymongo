@@ -52,32 +52,6 @@ func pressSpecialKey(m Model, kt tea.KeyType) (Model, tea.Cmd) {
 	return m.Update(tea.KeyMsg{Type: kt})
 }
 
-// executeCmd runs a tea.Cmd synchronously and returns its message (nil-safe).
-func executeCmd(cmd tea.Cmd) tea.Msg {
-	if cmd == nil {
-		return nil
-	}
-	return cmd()
-}
-
-// assertStatusMsg checks that a cmd produces a msg.StatusUpdate with the given
-// isErr flag.  It calls t.Helper so failures point at the caller.
-func assertStatusMsg(t *testing.T, cmd tea.Cmd, isErr bool) {
-	t.Helper()
-	m := executeCmd(cmd)
-	su, ok := m.(msg.StatusUpdate)
-	if !ok {
-		// cmd might be a tea.Batch — unwrap the first StatusUpdate we find.
-		// For unit-test purposes we just verify at least one status is in the
-		// batch by executing the cmd again as a batch check.
-		t.Logf("assertStatusMsg: cmd returned %T (not StatusUpdate directly)", m)
-		return
-	}
-	if su.IsErr != isErr {
-		t.Errorf("StatusUpdate.IsErr=%v; want %v  (text=%q)", su.IsErr, isErr, su.Text)
-	}
-}
-
 // ── CollectionSelected ────────────────────────────────────────────────────────
 
 func TestUpdate_CollectionSelected_ResetsState(t *testing.T) {

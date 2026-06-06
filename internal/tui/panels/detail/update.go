@@ -40,19 +40,19 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 	switch {
 	case isKey(key, m.km.Down):
-		m.viewport.LineDown(1)
+		m.viewport.ScrollDown(1)
 		return m, nil
 
 	case isKey(key, m.km.Up):
-		m.viewport.LineUp(1)
+		m.viewport.ScrollUp(1)
 		return m, nil
 
 	case isKey(key, m.km.PageDown):
-		m.viewport.HalfViewDown()
+		m.viewport.HalfPageDown()
 		return m, nil
 
 	case isKey(key, m.km.PageUp):
-		m.viewport.HalfViewUp()
+		m.viewport.HalfPageUp()
 		return m, nil
 
 	case isKey(key, m.km.Top):
