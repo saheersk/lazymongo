@@ -28,4 +28,80 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew tap
+        env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+
+          # Wait for release assets to be available
+          sleep 10
+
+          # Fetch checksums published by GoReleaser
+          CHECKSUMS=$(curl -fsSL \
+            "https://github.com/saheersk/lazymongo/releases/download/${GITHUB_REF_NAME}/checksums.txt")
+
+          get_sha() {
+            echo "$CHECKSUMS" | grep "$1" | awk '{print $1}'
+          }
+
+          DARWIN_ARM64=$(get_sha "darwin_arm64.tar.gz")
+          DARWIN_AMD64=$(get_sha "darwin_amd64.tar.gz")
+          LINUX_ARM64=$(get_sha  "linux_arm64.tar.gz")
+          LINUX_AMD64=$(get_sha  "linux_amd64.tar.gz")
+
+          # Generate Homebrew formula
+          cat > /tmp/lazymongo.rb <<EOF
+          class Lazymongo < Formula
+            desc "A fast, keyboard-driven terminal UI for MongoDB"
+            homepage "https://github.com/saheersk/lazymongo"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/saheersk/lazymongo/releases/download/v${VERSION}/lazymongo_${VERSION}_darwin_arm64.tar.gz"
+                sha256 "${DARWIN_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/saheersk/lazymongo/releases/download/v${VERSION}/lazymongo_${VERSION}_darwin_amd64.tar.gz"
+                sha256 "${DARWIN_AMD64}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/saheersk/lazymongo/releases/download/v${VERSION}/lazymongo_${VERSION}_linux_arm64.tar.gz"
+                sha256 "${LINUX_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/saheersk/lazymongo/releases/download/v${VERSION}/lazymongo_${VERSION}_linux_amd64.tar.gz"
+                sha256 "${LINUX_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "lazymongo"
+            end
+
+            test do
+              system "#{bin}/lazymongo", "--help"
+            end
+          end
+          EOF
+
+          # Push formula to homebrew-tap
+          git clone \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/saheersk/homebrew-tap.git" \
+            /tmp/homebrew-tap
+
+          mkdir -p /tmp/homebrew-tap/Formula
+          cp /tmp/lazymongo.rb /tmp/homebrew-tap/Formula/lazymongo.rb
+
+          cd /tmp/homebrew-tap
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          git add Formula/lazymongo.rb
+          git commit -m "lazymongo v${VERSION}"
+          git push

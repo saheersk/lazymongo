@@ -56,16 +56,4 @@ release:
   prerelease: auto
   name_template: "v{{.Version}}"
 
-brews:
-  - name: lazymongo
-    repository:
-      owner: saheersk
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: "https://github.com/saheersk/lazymongo"
-    description: "A fast, keyboard-driven terminal UI for MongoDB"
-    license: "MIT"
-    install: |
-      bin.install "lazymongo"
-    test: |
-      system "#{bin}/lazymongo", "--help"
+
