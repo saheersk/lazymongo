@@ -121,6 +121,22 @@ Add `$HOME\bin` to your `PATH` via **System Properties → Environment Variables
 go install github.com/saheersk/lazymongo@latest
 ```
 
+---
+
+### Self-update (any install method)
+
+Once lazymongo is installed, update it in place:
+
+```bash
+lazymongo update
+# Checking for updates…
+# Current: v0.4.1  →  Latest: v0.5.0
+# Downloading v0.5.0 (darwin/arm64)…
+# ✓  Updated to v0.5.0 — restart lazymongo.
+```
+
+If the binary lives in a system directory you'll need `sudo lazymongo update`.
+
 Requires Go 1.21+. Binary lands in `$(go env GOPATH)/bin`.
 
 ---
