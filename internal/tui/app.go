@@ -2681,11 +2681,15 @@ func tabCompleteImportPath(input string) (completed string, matches []string) {
 		if err != nil {
 			return p
 		}
+		sep := string(filepath.Separator)
+		if strings.HasPrefix(p, home+sep) {
+			return "~/" + p[len(home)+1:]
+		}
 		if strings.HasPrefix(p, home+"/") {
 			return "~/" + p[len(home)+1:]
 		}
-		if p == home {
-			return "~"
+		if p == home || p == home+sep || p == home+"/" {
+			return "~/"
 		}
 		return p
 	}

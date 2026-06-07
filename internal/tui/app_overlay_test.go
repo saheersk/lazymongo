@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -347,9 +348,8 @@ func TestTabComplete_MultipleMatches_AdvancesToCommonPrefix(t *testing.T) {
 
 func TestTabComplete_MultipleMatches_ReturnsAll(t *testing.T) {
 	dir := mkCompletionDir(t, []string{"a.json", "b.json", "c.json", "d.json"})
-	input := filepath.Join(dir, "")
 	// Trailing slash: list all entries.
-	input = dir + "/"
+	input := dir + "/"
 
 	_, matches := tabCompleteImportPath(input)
 
@@ -386,6 +386,9 @@ func TestTabComplete_BadDir_ReturnsInputUnchanged(t *testing.T) {
 }
 
 func TestTabComplete_Tilde_ExpandsAndRestores(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("~/ expansion uses Unix path separators; not applicable on Windows")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot determine home dir")

@@ -5,7 +5,7 @@
 
 A fast, keyboard-driven terminal UI for MongoDB — inspired by lazygit and lazydocker.
 
-![lazymongo screenshot](assets/screenshot.png)
+![lazymongo demo](assets/demo.gif)
 
 ---
 
