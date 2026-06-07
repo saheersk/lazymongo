@@ -105,7 +105,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Disconnect()
 
-	app := tui.New(client, themeName, cfg.EditorCmd(), cfg.UI.Keybindings)
+	var profiles []tui.ConnectionProfile
+	for _, c := range cfg.Connections {
+		profiles = append(profiles, tui.ConnectionProfile{Name: c.Name, URI: c.URI})
+	}
+	app := tui.New(client, themeName, cfg.EditorCmd(), cfg.UI.Keybindings, profiles)
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

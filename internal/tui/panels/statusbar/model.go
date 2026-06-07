@@ -28,7 +28,19 @@ type Model struct {
 	flash    string // transient message (errors, confirmations)
 	flashErr bool
 
+	healthOK      bool
+	healthLatency int64
+	healthSet     bool // false until first ping
+
 	th *style.Theme
+}
+
+// SetHealth updates the connection health indicator.
+func (m Model) SetHealth(ok bool, latencyMs int64) Model {
+	m.healthOK = ok
+	m.healthLatency = latencyMs
+	m.healthSet = true
+	return m
 }
 
 // New constructs a status bar.
@@ -112,7 +124,15 @@ func (m Model) View() string {
 
 	sep := m.th.StatusBar.Render("  ")
 
-	conn := m.th.StatusConn.Render("◆ " + truncURI(m.connURI))
+	indicator := "◆"
+	if m.healthSet && !m.healthOK {
+		indicator = "◇"
+	}
+	connStr := indicator + " " + truncURI(m.connURI)
+	if m.healthSet && m.healthOK && m.healthLatency > 0 {
+		connStr += fmt.Sprintf(" %dms", m.healthLatency)
+	}
+	conn := m.th.StatusConn.Render(connStr)
 	left := m.th.StatusBar.Render(" ") + conn
 
 	var mid string

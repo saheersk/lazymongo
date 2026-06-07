@@ -36,6 +36,36 @@ const (
 	focusIndexes
 )
 
+// ConnectionProfile is a named saved connection shown in the picker.
+type ConnectionProfile struct {
+	Name string
+	URI  string
+}
+
+// healthCheckedMsg is returned by the background health-check command.
+type healthCheckedMsg struct {
+	ok        bool
+	latencyMs int64
+}
+
+// watchEventMsg is returned by watchNextCmd for each change stream event.
+type watchEventMsg struct {
+	op            string
+	docID         interface{}
+	doc           bson.M
+	updatedFields bson.M
+	ts            time.Time
+	err           error // non-nil when the stream died
+}
+
+// connectionSwitchedMsg is returned after attempting to connect to a new profile.
+type connectionSwitchedMsg struct {
+	client *mongo.Client
+	uri    string
+	name   string
+	err    error
+}
+
 // docsWithDetail is the documents panel width when the detail/index panel is visible.
 const docsWithDetail = 38
 
@@ -128,10 +158,33 @@ type App struct {
 	th        *style.Theme
 	km        *keymap.Map
 	themeName string
+
+	// Health check
+	healthOK      bool  // true = last ping succeeded
+	healthLatency int64 // ms of last successful ping
+
+	// Watch mode
+	showWatch   bool
+	watchStream *mongo.WatchStream // nil when not watching
+	watchDB     string
+	watchCol    string
+	watchEvents []watchEventMsg // ring buffer newest-first, cap 100
+	watchScroll int
+	watchErr    error
+
+	// Connection picker
+	showConnPicker bool
+	connPickerIdx  int
+	connections    []ConnectionProfile
+	connSwitching  bool // true while connecting
+
+	// preserved for reconnect
+	editor      string
+	kmOverrides map[string]string
 }
 
 // New creates the root App with all panels initialised.
-func New(client *mongo.Client, themeName, editor string, keybindOverrides map[string]string) *App {
+func New(client *mongo.Client, themeName, editor string, keybindOverrides map[string]string, connections []ConnectionProfile) *App {
 	th := style.ByName(themeName)
 	km := keymap.Default()
 	if len(keybindOverrides) > 0 {
@@ -303,6 +356,10 @@ func New(client *mongo.Client, themeName, editor string, keybindOverrides map[st
 		renameColFn:  renameColFn,
 		loadStatsFn:  loadStatsFn,
 		exportDocsFn: exportDocs,
+		editor:       editor,
+		kmOverrides:  keybindOverrides,
+		connections:  connections,
+		healthOK:     true, // optimistic initial state
 	}
 }
 
@@ -313,7 +370,34 @@ func (a *App) Init() tea.Cmd {
 		a.documents.Init(),
 		a.detail.Init(),
 		a.statusbar.Init(),
+		healthCheckCmd(a.client),
 	)
+}
+
+// healthCheckCmd sleeps 15 seconds then pings the server.
+func healthCheckCmd(client *mongo.Client) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(15 * time.Second)
+		latency, err := client.Ping()
+		return healthCheckedMsg{ok: err == nil, latencyMs: latency}
+	}
+}
+
+// watchNextCmd blocks on the next change stream event.
+func watchNextCmd(stream *mongo.WatchStream) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := stream.Next()
+		if !ok {
+			return watchEventMsg{err: stream.Err()}
+		}
+		return watchEventMsg{
+			op:            ev.OperationType,
+			docID:         ev.DocID,
+			doc:           ev.Doc,
+			updatedFields: ev.UpdatedFields,
+			ts:            ev.Timestamp,
+		}
+	}
 }
 
 // Update is the central message dispatcher.
@@ -368,6 +452,59 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			a.showTheme = true
+			return &a, nil
+		}
+
+		// Watch overlay — handle before any other overlay
+		if a.showWatch {
+			switch message.String() {
+			case "j", "down":
+				a.watchScroll++
+			case "k", "up":
+				if a.watchScroll > 0 {
+					a.watchScroll--
+				}
+			case "W", "esc":
+				if a.watchStream != nil {
+					a.watchStream.Close()
+					a.watchStream = nil
+				}
+				a.showWatch = false
+				a.watchEvents = nil
+				a.watchErr = nil
+			}
+			return &a, nil
+		}
+
+		// Connection picker overlay
+		if a.showConnPicker {
+			if a.connSwitching {
+				// Swallow all keys while connecting
+				return &a, nil
+			}
+			switch message.String() {
+			case "esc":
+				a.showConnPicker = false
+			case "j", "down":
+				if a.connPickerIdx < len(a.connections)-1 {
+					a.connPickerIdx++
+				}
+			case "k", "up":
+				if a.connPickerIdx > 0 {
+					a.connPickerIdx--
+				}
+			case "enter":
+				if len(a.connections) > 0 {
+					profile := a.connections[a.connPickerIdx]
+					a.connSwitching = true
+					uri := profile.URI
+					name := profile.Name
+					return &a, func() tea.Msg {
+						newClient, err := mongo.NewClient(uri)
+						return connectionSwitchedMsg{client: newClient, uri: uri, name: name, err: err}
+					}
+				}
+			}
 			return &a, nil
 		}
 
@@ -869,6 +1006,57 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// W → watch collection (documents focus, collection loaded) or stop watching
+		if message.String() == "W" && a.focus == focusDocuments {
+			if a.showWatch {
+				// stop watching
+				if a.watchStream != nil {
+					a.watchStream.Close()
+					a.watchStream = nil
+				}
+				a.showWatch = false
+				a.watchEvents = nil
+				a.watchErr = nil
+				return &a, nil
+			}
+			db, col := a.currentDBCol()
+			if db == "" || col == "" {
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: "select a collection first"})
+				return &a, sbCmd
+			}
+			stream, err := a.client.WatchCollection(db, col)
+			if err != nil {
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+					Text:  "watch failed: " + err.Error(),
+					IsErr: true,
+				})
+				return &a, sbCmd
+			}
+			a.showWatch = true
+			a.watchStream = stream
+			a.watchDB = db
+			a.watchCol = col
+			a.watchEvents = nil
+			a.watchScroll = 0
+			a.watchErr = nil
+			return &a, watchNextCmd(stream)
+		}
+
+		// P → open connection profile picker (global)
+		if message.String() == "P" {
+			if len(a.connections) == 0 {
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: "no saved connection profiles"})
+				return &a, sbCmd
+			}
+			a.showConnPicker = true
+			a.connPickerIdx = 0
+			a.connSwitching = false
+			return &a, nil
+		}
+
 		// i → import documents from file (documents focus, collection loaded)
 		if message.String() == "i" && a.focus == focusDocuments {
 			db, col := a.currentDBCol()
@@ -1331,6 +1519,72 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.statusbar, sbCmd = a.statusbar.Update(message)
 		cmds = append(cmds, sbCmd)
 
+	// ── health check result ────────────────────────────────────────────────────
+	case healthCheckedMsg:
+		a.healthOK = message.ok
+		if message.ok {
+			a.healthLatency = message.latencyMs
+		}
+		a.statusbar = a.statusbar.SetHealth(message.ok, message.latencyMs)
+		c := a.client
+		return &a, healthCheckCmd(c)
+
+	// ── watch stream event ────────────────────────────────────────────────────
+	case watchEventMsg:
+		if !a.showWatch {
+			return &a, nil // already stopped
+		}
+		if message.err != nil {
+			a.watchErr = message.err
+			if a.watchStream != nil {
+				a.watchStream.Close()
+				a.watchStream = nil
+			}
+			return &a, nil
+		}
+		// Handle invalidate (collection dropped/renamed)
+		if message.op == "invalidate" {
+			a.watchErr = fmt.Errorf("collection invalidated (dropped or renamed)")
+			if a.watchStream != nil {
+				a.watchStream.Close()
+				a.watchStream = nil
+			}
+			return &a, nil
+		}
+		// Prepend to ring buffer
+		a.watchEvents = append([]watchEventMsg{message}, a.watchEvents...)
+		if len(a.watchEvents) > 100 {
+			a.watchEvents = a.watchEvents[:100]
+		}
+		stream := a.watchStream
+		return &a, watchNextCmd(stream)
+
+	// ── connection switched ────────────────────────────────────────────────────
+	case connectionSwitchedMsg:
+		a.showConnPicker = false
+		a.connSwitching = false
+		if message.err != nil {
+			var sbCmd tea.Cmd
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  "connection failed: " + message.err.Error(),
+				IsErr: true,
+			})
+			return &a, sbCmd
+		}
+		oldClient := a.client
+		go oldClient.Disconnect()
+		// Reinitialize with new client
+		newApp := New(message.client, a.themeName, a.editor, a.kmOverrides, a.connections)
+		newApp.width = a.width
+		newApp.height = a.height
+		*newApp = newApp.applyLayout()
+		// Show connected status
+		var sbCmd tea.Cmd
+		newApp.statusbar, sbCmd = newApp.statusbar.Update(msg.StatusUpdate{
+			Text: fmt.Sprintf("connected to %s", message.name),
+		})
+		return newApp, tea.Batch(newApp.Init(), sbCmd)
+
 	// ── everything else (spinner ticks, cursor blinks, mouse, etc.) ──────────────
 	default:
 		var sCmd, dCmd, dtCmd, idxCmd tea.Cmd
@@ -1419,6 +1673,12 @@ func (a App) View() string {
 		a.statusbar.SetWidth(a.width).View(),
 	)
 
+	if a.showWatch {
+		return renderWatch(base, a.width, a.height, a.th, a.watchDB, a.watchCol, a.watchEvents, a.watchScroll, a.watchErr)
+	}
+	if a.showConnPicker {
+		return renderConnPicker(base, a.width, a.height, a.th, a.connections, a.connPickerIdx, a.connSwitching)
+	}
 	if a.showExportPicker {
 		return renderExportPicker(base, a.width, a.height, a.th,
 			a.documents.DB(), a.documents.ColName(), a.documents.FilterExpr(),
@@ -1519,6 +1779,7 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 		{"Global", [][2]string{
 			{"?", "toggle this help"},
 			{"T", "change color theme"},
+			{"P", "switch connection profile"},
 			{"h / ←", "focus sidebar"},
 			{"l / →", "focus documents"},
 			{"esc", "close panel / go back"},
@@ -1554,6 +1815,7 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 			{"E", "explain query plan  (index usage + timing)"},
 			{"S", "schema inference  (sample 100 docs, field types)"},
 			{"i", "import documents  (json / jsonl / csv)"},
+			{"W", "watch collection  (live change stream)"},
 		}},
 		{"Index panel", [][2]string{
 			{"n / d", "create / drop index"},
@@ -2454,4 +2716,213 @@ func longestCommonPrefix(a, b string) string {
 		}
 	}
 	return a[:n]
+}
+
+// fmtAgo returns a human-readable "time ago" string for a past time.
+func fmtAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < 2*time.Second:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+}
+
+// renderWatch overlays the live change stream viewer.
+func renderWatch(base string, w, h int, th *style.Theme, db, col string, events []watchEventMsg, scroll int, watchErr error) string {
+	boxW := 70
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 40 {
+		boxW = 40
+	}
+
+	// Status indicator
+	statusStr := "● LIVE"
+	if watchErr != nil {
+		statusStr = "○ STOPPED"
+	}
+	titleText := fmt.Sprintf("  WATCHING  %s.%s  %s", db, col, statusStr)
+	titleLine := th.HelpTitle.Width(boxW).Render(titleText)
+
+	var rows []string
+	rows = append(rows, titleLine, "")
+
+	if watchErr != nil {
+		rows = append(rows, th.ErrText.Render("  error: "+watchErr.Error()), "")
+	}
+
+	if len(events) == 0 && watchErr == nil {
+		rows = append(rows, th.DimText.Render("  waiting for changes…"), "")
+	}
+
+	// Render visible events with scroll offset
+	opColors := map[string]string{
+		"insert":  "#22c55e", // green
+		"update":  "#eab308", // yellow
+		"replace": "#3b82f6", // blue
+		"delete":  "#ef4444", // red
+	}
+
+	visibleStart := scroll
+	if visibleStart > len(events) {
+		visibleStart = len(events)
+	}
+	visibleEvents := events[visibleStart:]
+	maxRows := h - 10
+	if maxRows < 3 {
+		maxRows = 3
+	}
+	if len(visibleEvents) > maxRows {
+		visibleEvents = visibleEvents[:maxRows]
+	}
+
+	for _, ev := range visibleEvents {
+		op := strings.ToUpper(ev.op)
+		if op == "" {
+			op = "EVENT"
+		}
+		color, ok := opColors[ev.op]
+		if !ok {
+			color = "#a78bfa"
+		}
+		badge := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(color)).
+			Bold(true).
+			Render(fmt.Sprintf("%-7s", op))
+
+		// Format doc ID
+		idStr := fmt.Sprintf("%v", ev.docID)
+		if len(idStr) > 24 {
+			idStr = idStr[:23] + "…"
+		}
+
+		// Preview: prefer updated fields summary, else doc fields
+		var preview string
+		if len(ev.updatedFields) > 0 {
+			var parts []string
+			for k := range ev.updatedFields {
+				parts = append(parts, k)
+				if len(parts) >= 3 {
+					break
+				}
+			}
+			preview = "updated: " + strings.Join(parts, ", ")
+		} else if len(ev.doc) > 0 {
+			var parts []string
+			for k := range ev.doc {
+				if k == "_id" {
+					continue
+				}
+				parts = append(parts, k)
+				if len(parts) >= 3 {
+					break
+				}
+			}
+			if len(parts) > 0 {
+				preview = strings.Join(parts, ", ")
+			}
+		}
+
+		ago := fmtAgo(ev.ts)
+
+		line := badge + "  " + th.HelpKey.Render(idStr)
+		if preview != "" {
+			maxPrev := boxW - lipgloss.Width(line) - len(ago) - 4
+			if maxPrev > 0 && len(preview) > maxPrev {
+				preview = preview[:maxPrev-1] + "…"
+			}
+			if maxPrev > 0 {
+				line += "  " + th.DimText.Render(preview)
+			}
+		}
+		// Right-align ago
+		lineW := lipgloss.Width(line)
+		agoStr := th.DimText.Render(ago)
+		gap := boxW - lineW - lipgloss.Width(agoStr) - 2
+		if gap < 1 {
+			gap = 1
+		}
+		line += strings.Repeat(" ", gap) + agoStr
+
+		rows = append(rows, "  "+line)
+	}
+
+	if len(events) > 0 {
+		rows = append(rows, "")
+		scrollInfo := fmt.Sprintf("  %d events", len(events))
+		if scroll > 0 {
+			scrollInfo += fmt.Sprintf("  (scroll: %d)", scroll)
+		}
+		rows = append(rows, th.DimText.Render(scrollInfo))
+	}
+
+	rows = append(rows, "", th.DimText.Render("  W / esc stop   j/k scroll"))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderConnPicker overlays the connection profile picker.
+func renderConnPicker(base string, w, h int, th *style.Theme, connections []ConnectionProfile, idx int, switching bool) string {
+	boxW := 60
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 36 {
+		boxW = 36
+	}
+
+	titleLine := th.HelpTitle.Width(boxW).Render("  SWITCH CONNECTION")
+
+	var rows []string
+	rows = append(rows, titleLine, "")
+
+	for i, c := range connections {
+		name := c.Name
+		uri := c.URI
+		// Truncate URI to fit
+		maxURI := boxW - len(name) - 6
+		if maxURI < 10 {
+			maxURI = 10
+		}
+		if len(uri) > maxURI {
+			uri = uri[:maxURI-1] + "…"
+		}
+
+		line := fmt.Sprintf("%-16s  %s", name, uri)
+		if len([]rune(line)) > boxW-4 {
+			runes := []rune(line)
+			line = string(runes[:boxW-5]) + "…"
+		}
+
+		if switching && i == idx {
+			rows = append(rows, th.DimText.Render(fmt.Sprintf("  connecting to %s…", c.Name)))
+		} else if i == idx {
+			rows = append(rows, th.TableSelected.Width(boxW).Render("  ▶ "+line))
+		} else {
+			rows = append(rows, th.DimText.Render("    "+line))
+		}
+	}
+
+	rows = append(rows, "", th.DimText.Render("  j/k navigate  enter connect  esc cancel"))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
 }
