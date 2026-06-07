@@ -24,8 +24,7 @@ memory/
 .env.*
 config.local.yaml
 
-# demo recording (generated locally with VHS, not committed)
+# demo recording tape (generated locally with VHS, not committed)
 demo.tape
-assets/demo.gif
 assets/demo.webp
 assets/demo.mp4
