@@ -157,6 +157,12 @@ type DocumentDeleted struct {
 	Err error
 }
 
+// BulkDeleted confirms a successful bulk delete.
+type BulkDeleted struct {
+	Count int64
+	Err   error
+}
+
 // DatabaseDropped is dispatched after a drop-database attempt completes.
 type DatabaseDropped struct {
 	DB  string
@@ -220,3 +226,59 @@ type StatusUpdate struct {
 
 // ClearFlash is sent by a timer command to dismiss a transient status message.
 type ClearFlash struct{}
+
+// ---- explain plan ----
+
+// ExplainStats holds the key figures extracted from an explain("executionStats") result.
+type ExplainStats struct {
+	DB, Col         string
+	IndexUsed       string // empty string means COLLSCAN
+	NReturned       int64
+	DocsExamined    int64
+	KeysExamined    int64
+	ExecutionTimeMs int64
+	Raw             bson.M // full explain output for detail rendering
+	Err             error
+}
+
+// ExplainLoaded is dispatched when the explain result arrives.
+type ExplainLoaded struct {
+	Stats ExplainStats
+}
+
+// ---- schema inference ----
+
+// TypeFreq pairs a BSON type name with its occurrence count in sampled docs.
+type TypeFreq struct {
+	Type  string
+	Count int
+}
+
+// SchemaField describes one field across the sampled documents.
+type SchemaField struct {
+	Name  string
+	Types []TypeFreq // sorted by Count desc
+	Count int        // number of sampled docs containing this field
+}
+
+// SchemaResult carries the output of SampleSchema.
+type SchemaResult struct {
+	DB, Col    string
+	Fields     []SchemaField
+	SampleSize int // actual number of docs sampled
+	Err        error
+}
+
+// SchemaLoaded is dispatched when schema inference completes.
+type SchemaLoaded struct {
+	Result SchemaResult
+}
+
+// ---- import ----
+
+// ImportDone is dispatched after a bulk import attempt completes.
+type ImportDone struct {
+	Inserted int
+	Failed   int
+	Err      error // first batch error, if any
+}

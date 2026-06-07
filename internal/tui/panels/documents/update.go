@@ -36,6 +36,8 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		m.aggPipeline = ""
 		m.err = nil
 		m.loading = true
+		m.selectedIDs = map[string]interface{}{}
+		m.filterHistoryCursor = -1
 		return m, tea.Batch(m.spinner.Tick, m.loadPage(0))
 
 	// ── page loaded ──────────────────────────────────────────────────────────
@@ -146,6 +148,20 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 			statusCmd("document deleted"),
 		)
 
+	case msg.BulkDeleted:
+		if message.Err != nil {
+			return m, statusCmd(fmt.Sprintf("bulk delete failed: %v", message.Err))
+		}
+		m.selectedIDs = map[string]interface{}{}
+		m.aggMode = false
+		m.cursor = 0
+		m.loading = true
+		return m, tea.Batch(
+			m.spinner.Tick,
+			m.loadPage(m.page),
+			statusCmd(fmt.Sprintf("deleted %d documents", message.Count)),
+		)
+
 	// ── keyboard ─────────────────────────────────────────────────────────────
 	case tea.KeyMsg:
 		return m.handleKey(message)
@@ -165,7 +181,11 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 // ── key dispatch ─────────────────────────────────────────────────────────────
 
 func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
-	// delete confirmation takes over all input
+	// bulk-delete confirmation takes over all input
+	if m.bulkDeleteConfirm {
+		return m.handleBulkDeleteConfirm(key)
+	}
+	// single-delete confirmation takes over all input
 	if m.deleteConfirm {
 		return m.handleDeleteConfirm(key)
 	}
@@ -174,13 +194,19 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleInputKey(key)
 	}
 
-	// esc while showing aggregate results exits agg mode and reloads
-	if m.aggMode && key.String() == "esc" {
-		m.aggMode = false
-		m.aggPipeline = ""
-		m.docs = nil
-		m.loading = true
-		return m, tea.Batch(m.spinner.Tick, m.loadPage(m.page))
+	// esc: clear selection first if any; then exit agg mode
+	if key.String() == "esc" {
+		if len(m.selectedIDs) > 0 {
+			m.selectedIDs = map[string]interface{}{}
+			return m, nil
+		}
+		if m.aggMode {
+			m.aggMode = false
+			m.aggPipeline = ""
+			m.docs = nil
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.loadPage(m.page))
+		}
 	}
 
 	switch {
@@ -291,6 +317,38 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		m.deleteConfirm = true
 		return m, nil
 
+	// ── clone doc ────────────────────────────────────────────────────────────
+	case key.String() == "c":
+		doc := m.ActiveDoc()
+		if doc == nil {
+			return m, nil
+		}
+		return m.openEditorClone(doc)
+
+	// ── multi-select ─────────────────────────────────────────────────────────
+	case key.String() == " ":
+		doc := m.ActiveDoc()
+		if doc == nil {
+			return m, nil
+		}
+		k := util.FormatValue(doc["_id"])
+		if _, ok := m.selectedIDs[k]; ok {
+			delete(m.selectedIDs, k)
+		} else {
+			m.selectedIDs[k] = doc["_id"]
+		}
+		// Advance cursor after toggle so space+↓ feels natural.
+		m.cursor++
+		return m.clamp(), nil
+
+	// ── bulk delete ───────────────────────────────────────────────────────────
+	case key.String() == "D":
+		if len(m.selectedIDs) == 0 {
+			return m, nil
+		}
+		m.bulkDeleteConfirm = true
+		return m, nil
+
 	// ── aggregate pipeline ───────────────────────────────────────────────────
 	case key.String() == "a":
 		if m.db == "" {
@@ -338,24 +396,79 @@ func (m Model) handleDeleteConfirm(key tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleBulkDeleteConfirm(key tea.KeyMsg) (Model, tea.Cmd) {
+	m.bulkDeleteConfirm = false
+	if key.String() == "y" || key.String() == "Y" {
+		ids := make([]interface{}, 0, len(m.selectedIDs))
+		for _, id := range m.selectedIDs {
+			ids = append(ids, id)
+		}
+		return m, m.bulkDeleteFn(m.db, m.collection, ids)
+	}
+	return m, nil
+}
+
 // ── filter / sort input bar ───────────────────────────────────────────────────
 
 func (m Model) handleInputKey(key tea.KeyMsg) (Model, tea.Cmd) {
 	switch key.Type {
 	case tea.KeyEnter:
 		expr := strings.TrimSpace(m.input.Value())
+		m.filterHistoryCursor = -1
 		switch m.mode {
 		case modeFilter:
 			return m.commitFilter(expr)
 		case modeSort:
 			return m.commitSort(expr)
 		}
+
+	case tea.KeyUp:
+		// Only navigate history in filter mode.
+		if m.mode != modeFilter || len(m.filterHistory) == 0 {
+			break
+		}
+		if m.filterHistoryCursor == -1 {
+			m.filterHistoryDraft = m.input.Value()
+		}
+		next := m.filterHistoryCursor + 1
+		if next >= len(m.filterHistory) {
+			return m, nil
+		}
+		m.filterHistoryCursor = next
+		m.input.SetValue(m.filterHistory[next])
+		m.input.CursorEnd()
+		return m, nil
+
+	case tea.KeyDown:
+		if m.mode != modeFilter || m.filterHistoryCursor < 0 {
+			break
+		}
+		prev := m.filterHistoryCursor - 1
+		if prev < 0 {
+			m.filterHistoryCursor = -1
+			m.input.SetValue(m.filterHistoryDraft)
+			m.input.CursorEnd()
+			return m, nil
+		}
+		m.filterHistoryCursor = prev
+		m.input.SetValue(m.filterHistory[prev])
+		m.input.CursorEnd()
+		return m, nil
+
 	case tea.KeyEsc:
 		m.mode = modeNone
 		m.inputErr = ""
+		m.filterHistoryCursor = -1
+
 	case tea.KeyCtrlU:
 		m.input.SetValue("")
+		m.filterHistoryCursor = -1
+
 	default:
+		// Any character typed detaches from history navigation.
+		if m.filterHistoryCursor >= 0 {
+			m.filterHistoryCursor = -1
+		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(key)
 		return m, cmd
@@ -372,7 +485,29 @@ func (m Model) commitFilter(expr string) (Model, tea.Cmd) {
 		m.inputErr = "bad JSON: " + err.Error()
 		return m, nil
 	}
+	m = m.pushFilterHistory(expr)
 	return m.applyFilterSort(filter, m.sort, expr, m.sortExpr)
+}
+
+const maxFilterHistory = 20
+
+func (m Model) pushFilterHistory(expr string) Model {
+	if expr == "" {
+		return m
+	}
+	// Deduplicate: remove existing occurrence of the same expression.
+	filtered := m.filterHistory[:0:len(m.filterHistory)]
+	for _, h := range m.filterHistory {
+		if h != expr {
+			filtered = append(filtered, h)
+		}
+	}
+	// Prepend newest entry.
+	m.filterHistory = append([]string{expr}, filtered...)
+	if len(m.filterHistory) > maxFilterHistory {
+		m.filterHistory = m.filterHistory[:maxFilterHistory]
+	}
+	return m
 }
 
 func (m Model) commitSort(expr string) (Model, tea.Cmd) {
@@ -461,6 +596,39 @@ func (m Model) openEditorEdit(doc bson.M) (Model, tea.Cmd) {
 			return msg.EditorDone{Err: err}
 		}
 		return msg.EditorDone{Doc: newDoc, IsNew: false, OrigID: origID}
+	})
+}
+
+func (m Model) openEditorClone(src bson.M) (Model, tea.Cmd) {
+	// Copy all fields except _id, then assign a fresh ObjectId so the
+	// Extended JSON type syntax is immediately visible in the editor.
+	clone := make(bson.M, len(src))
+	for k, v := range src {
+		if k != "_id" {
+			clone[k] = v
+		}
+	}
+	clone["_id"] = bson.NewObjectID()
+
+	raw, err := util.BSONToJSON(clone)
+	if err != nil {
+		return m, statusCmd("marshal error: " + err.Error())
+	}
+
+	cmd, err := buildEditorCmd(raw, m.editor)
+	if err != nil {
+		return m, statusCmd("error: " + err.Error())
+	}
+	return m, tea.ExecProcess(cmd.cmd, func(execErr error) tea.Msg {
+		defer os.Remove(cmd.path)
+		if execErr != nil {
+			return msg.EditorDone{Err: execErr}
+		}
+		doc, err := readDocFromFile(cmd.path)
+		if err != nil {
+			return msg.EditorDone{Err: err}
+		}
+		return msg.EditorDone{Doc: doc, IsNew: true}
 	})
 }
 

@@ -134,6 +134,15 @@ func (m Model) renderInner() string {
 func (m Model) renderBottom() string {
 	innerW := m.width - 4
 
+	// ── bulk delete confirmation ───────────────────────────────────────────
+	if m.bulkDeleteConfirm {
+		n := len(m.selectedIDs)
+		bar := m.th.ErrText.Render(fmt.Sprintf("  Delete %d selected documents?  ", n)) +
+			m.th.HelpKey.Render("y") + m.th.HelpDesc.Render(" yes  ") +
+			m.th.HelpKey.Render("any") + m.th.HelpDesc.Render(" cancel")
+		return lipgloss.NewStyle().Width(innerW).Render(bar)
+	}
+
 	// ── delete confirmation ────────────────────────────────────────────────
 	if m.deleteConfirm {
 		doc := m.ActiveDoc()
@@ -173,7 +182,11 @@ func (m Model) renderBottom() string {
 		if m.inputErr != "" {
 			hint = m.th.DimText.Render("  fix query or esc to cancel")
 		} else {
-			hint = m.th.DimText.Render("  enter apply  esc cancel  ctrl+u clear  empty = no filter")
+			histHint := ""
+			if len(m.filterHistory) > 0 {
+				histHint = "  ↑/↓ history"
+			}
+			hint = m.th.DimText.Render("  enter apply  esc cancel  ctrl+u clear" + histHint)
 		}
 		return lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.NewStyle().Width(innerW).Render(bar),
@@ -206,14 +219,20 @@ func (m Model) renderBottom() string {
 	if m.aggMode {
 		hints = append(hints, m.th.HelpKey.Render("a")+" "+m.th.HelpDesc.Render("re-run"))
 		hints = append(hints, m.th.HelpKey.Render("esc")+" "+m.th.HelpDesc.Render("exit agg"))
+	} else if len(m.selectedIDs) > 0 {
+		sel := fmt.Sprintf("%d selected", len(m.selectedIDs))
+		hints = append(hints, m.th.StatusFilter.Render("▪ "+sel))
+		hints = append(hints, m.th.HelpKey.Render("space")+" "+m.th.HelpDesc.Render("toggle"))
+		hints = append(hints, m.th.HelpKey.Render("D")+" "+m.th.HelpDesc.Render("delete all"))
+		hints = append(hints, m.th.HelpKey.Render("esc")+" "+m.th.HelpDesc.Render("clear"))
 	} else {
 		hints = append(hints, m.th.HelpKey.Render("n")+" "+m.th.HelpDesc.Render("new"))
 		hints = append(hints, m.th.HelpKey.Render("e")+" "+m.th.HelpDesc.Render("edit"))
+		hints = append(hints, m.th.HelpKey.Render("c")+" "+m.th.HelpDesc.Render("clone"))
 		hints = append(hints, m.th.HelpKey.Render("d")+" "+m.th.HelpDesc.Render("delete"))
+		hints = append(hints, m.th.HelpKey.Render("space")+" "+m.th.HelpDesc.Render("select"))
 		hints = append(hints, m.th.HelpKey.Render("/")+" "+m.th.HelpDesc.Render("filter"))
 		hints = append(hints, m.th.HelpKey.Render("s")+" "+m.th.HelpDesc.Render("sort"))
-		hints = append(hints, m.th.HelpKey.Render("a")+" "+m.th.HelpDesc.Render("agg"))
-		hints = append(hints, m.th.HelpKey.Render("y/Y")+" "+m.th.HelpDesc.Render("copy"))
 		hints = append(hints, m.th.HelpKey.Render("x")+" "+m.th.HelpDesc.Render("export"))
 		if m.filterExpr != "" || m.sortExpr != "" {
 			hints = append(hints, m.th.HelpKey.Render("r")+" "+m.th.HelpDesc.Render("reset"))
@@ -235,6 +254,12 @@ func (m Model) renderHeaderRow(widths []int) string {
 func (m Model) renderDocRow(idx int, widths []int) string {
 	doc := m.docs[idx]
 	isCursor := idx == m.cursor
+	isSel := m.isSelected(doc)
+
+	marker := "  "
+	if isSel {
+		marker = "▪ "
+	}
 
 	var parts []string
 	for i, col := range m.columns {
@@ -245,10 +270,16 @@ func (m Model) renderDocRow(idx int, widths []int) string {
 		parts = append(parts, util.PadRight(val, widths[i]))
 	}
 
-	line := "  " + strings.Join(parts, " ")
+	line := marker + strings.Join(parts, " ")
 
+	if isCursor && isSel {
+		return m.th.StatusFilter.Width(m.width - 4).Render(line)
+	}
 	if isCursor {
 		return m.th.TableSelected.Width(m.width - 4).Render(line)
+	}
+	if isSel {
+		return m.th.StatusFilter.Render(line)
 	}
 	if idx%2 == 0 {
 		return m.th.TableRow.Render(line)

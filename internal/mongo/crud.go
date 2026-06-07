@@ -45,3 +45,20 @@ func (c *Client) DeleteOne(dbName, colName string, id interface{}) error {
 	_, err := col.DeleteOne(ctx, bson.M{"_id": id})
 	return err
 }
+
+// DeleteMany deletes all documents whose _id is in ids.
+// Returns the number of documents deleted.
+func (c *Client) DeleteMany(dbName, colName string, ids []interface{}) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	ctx, cancel := opCtx()
+	defer cancel()
+
+	col := c.inner.Database(dbName).Collection(colName)
+	res, err := col.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}

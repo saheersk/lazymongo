@@ -38,9 +38,10 @@ func newTestModel(
 	if deleteFn == nil {
 		deleteFn = func(db, col string, id interface{}) tea.Cmd { return nil }
 	}
+	bulkDeleteFn := func(db, col string, ids []interface{}) tea.Cmd { return nil }
 	aggregateFn := func(db, col string, pipeline bson.A) tea.Cmd { return nil }
 	exportFn := func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd { return nil }
-	return New(th, km, fetchPage, insertFn, replaceFn, deleteFn, aggregateFn, exportFn)
+	return New(th, km, fetchPage, insertFn, replaceFn, deleteFn, bulkDeleteFn, aggregateFn, exportFn)
 }
 
 // pressKey simulates a key-press message.
@@ -928,6 +929,323 @@ func TestUpdate_FilterChanged_IsNoOp(t *testing.T) {
 		t.Error("FilterChanged should return nil cmd")
 	}
 	_ = m2 // no state changes expected
+}
+
+// ── Multi-select (space key) ──────────────────────────────────────────────────
+
+func TestUpdate_Space_TogglesSelectionOn(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	id := bson.NewObjectID()
+	m.docs = []bson.M{{"_id": id, "name": "Alice"}, {"_id": bson.NewObjectID()}}
+	m.cursor = 0
+
+	m, _ = pressKey(m, " ")
+
+	if m.SelectionCount() != 1 {
+		t.Errorf("SelectionCount = %d; want 1 after space", m.SelectionCount())
+	}
+	if m.cursor != 1 {
+		t.Errorf("cursor = %d; want 1 (space advances cursor)", m.cursor)
+	}
+}
+
+func TestUpdate_Space_TogglesSelectionOff(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	id := bson.NewObjectID()
+	m.docs = []bson.M{{"_id": id}}
+	m.cursor = 0
+
+	// First press selects.
+	m, _ = pressKey(m, " ")
+	if m.SelectionCount() != 1 {
+		t.Fatalf("expected 1 selected after first space, got %d", m.SelectionCount())
+	}
+
+	// Reset cursor to 0 (it advanced to 1, but only 1 doc so it clamped to 0).
+	m.cursor = 0
+	// Second press deselects.
+	m, _ = pressKey(m, " ")
+	if m.SelectionCount() != 0 {
+		t.Errorf("SelectionCount = %d; want 0 after second space (deselect)", m.SelectionCount())
+	}
+}
+
+func TestUpdate_Space_NoDocIsNoOp(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	m.docs = nil
+
+	m, _ = pressKey(m, " ")
+
+	if m.SelectionCount() != 0 {
+		t.Errorf("SelectionCount = %d; want 0 when no docs", m.SelectionCount())
+	}
+}
+
+func TestUpdate_Esc_ClearsSelection(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	id := bson.NewObjectID()
+	m.docs = []bson.M{{"_id": id}}
+	m.cursor = 0
+
+	// Select a doc.
+	m, _ = pressKey(m, " ")
+	if m.SelectionCount() == 0 {
+		t.Fatal("precondition: expected selection")
+	}
+
+	m.cursor = 0
+	m, _ = pressSpecialKey(m, tea.KeyEsc)
+
+	if m.SelectionCount() != 0 {
+		t.Errorf("SelectionCount = %d; want 0 after esc", m.SelectionCount())
+	}
+}
+
+// ── Bulk delete confirm ───────────────────────────────────────────────────────
+
+func TestUpdate_BulkDelete_D_WithSelectionSetsBulkDeleteConfirm(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	id := bson.NewObjectID()
+	m.docs = []bson.M{{"_id": id}}
+	m.cursor = 0
+	m, _ = pressKey(m, " ") // select
+	m.cursor = 0
+
+	m, _ = pressKey(m, "D")
+
+	if !m.bulkDeleteConfirm {
+		t.Error("bulkDeleteConfirm should be true after D with selection")
+	}
+}
+
+func TestUpdate_BulkDelete_D_WithNoSelectionIsNoOp(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	m.docs = []bson.M{{"_id": bson.NewObjectID()}}
+	m.cursor = 0
+
+	m, _ = pressKey(m, "D")
+
+	if m.bulkDeleteConfirm {
+		t.Error("bulkDeleteConfirm should be false when no selection")
+	}
+}
+
+func TestUpdate_BulkDeleteConfirm_Y_FiresBulkDeleteFn(t *testing.T) {
+	bulkCalled := false
+	bulkDeleteFn := func(db, col string, ids []interface{}) tea.Cmd {
+		bulkCalled = true
+		return func() tea.Msg { return msg.BulkDeleted{Count: int64(len(ids))} }
+	}
+	th := style.Default()
+	km := keymap.Default()
+	m := New(th, km,
+		func(db, col string, filter bson.M, sort bson.D, page int) tea.Cmd { return nil },
+		func(db, col string, doc bson.M) tea.Cmd { return nil },
+		func(db, col string, id interface{}, doc bson.M) tea.Cmd { return nil },
+		func(db, col string, id interface{}) tea.Cmd { return nil },
+		bulkDeleteFn,
+		func(db, col string, pipeline bson.A) tea.Cmd { return nil },
+		func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd { return nil },
+	)
+	m.db = "db"
+	m.collection = "col"
+	id := bson.NewObjectID()
+	m.docs = []bson.M{{"_id": id}}
+	m.cursor = 0
+	m, _ = pressKey(m, " ") // select
+	m.cursor = 0
+	m, _ = pressKey(m, "D") // set confirm
+
+	m, cmd := pressKey(m, "y")
+
+	if m.bulkDeleteConfirm {
+		t.Error("bulkDeleteConfirm should be false after confirm")
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd after bulk delete confirm")
+	}
+	cmd() // execute to trigger bulkDeleteFn
+	if !bulkCalled {
+		t.Error("bulkDeleteFn should have been called")
+	}
+}
+
+func TestUpdate_BulkDeleteConfirm_AnyOtherKey_Cancels(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	m.docs = []bson.M{{"_id": bson.NewObjectID()}}
+	m.cursor = 0
+	m, _ = pressKey(m, " ")
+	m.cursor = 0
+	m.bulkDeleteConfirm = true
+
+	m, _ = pressKey(m, "n")
+
+	if m.bulkDeleteConfirm {
+		t.Error("bulkDeleteConfirm should be false after non-y key")
+	}
+}
+
+func TestUpdate_InInputMode_WithBulkDeleteConfirm(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	if m.InInputMode() {
+		t.Error("InInputMode should be false initially")
+	}
+
+	m.bulkDeleteConfirm = true
+	if !m.InInputMode() {
+		t.Error("InInputMode should be true when bulkDeleteConfirm=true")
+	}
+}
+
+func TestUpdate_BulkDeleted_Msg_ClearsSelection(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+	m.docs = []bson.M{{"_id": bson.NewObjectID()}}
+	m.cursor = 0
+	m, _ = pressKey(m, " ") // select
+	if m.SelectionCount() == 0 {
+		t.Fatal("precondition: expected selection")
+	}
+
+	m, _ = m.Update(msg.BulkDeleted{Count: 1})
+
+	if m.SelectionCount() != 0 {
+		t.Errorf("SelectionCount = %d; want 0 after BulkDeleted", m.SelectionCount())
+	}
+	if !m.loading {
+		t.Error("loading should be true after BulkDeleted (triggers page reload)")
+	}
+}
+
+func TestUpdate_BulkDeleted_Error_EmitsStatus(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+
+	_, cmd := m.Update(msg.BulkDeleted{Err: fmt.Errorf("write error")})
+
+	if cmd == nil {
+		t.Fatal("expected status cmd after BulkDeleted error")
+	}
+	result := cmd()
+	su, ok := result.(msg.StatusUpdate)
+	if !ok {
+		t.Fatalf("expected StatusUpdate, got %T", result)
+	}
+	if su.Text == "" {
+		t.Error("StatusUpdate.Text should not be empty on error")
+	}
+}
+
+// ── Filter history ────────────────────────────────────────────────────────────
+
+func TestUpdate_FilterHistory_PushOnCommit(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+
+	// Push 3 distinct entries directly (avoids textinput accumulation).
+	m = m.pushFilterHistory(`{"a":1}`)
+	m = m.pushFilterHistory(`{"b":2}`)
+	m = m.pushFilterHistory(`{"c":3}`)
+
+	if len(m.filterHistory) != 3 {
+		t.Fatalf("filterHistory len = %d; want 3", len(m.filterHistory))
+	}
+	// Newest first.
+	if m.filterHistory[0] != `{"c":3}` {
+		t.Errorf("filterHistory[0] = %q; want newest entry", m.filterHistory[0])
+	}
+}
+
+func TestUpdate_FilterHistory_Deduplicates(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+
+	expr := `{"x":1}`
+	m = m.pushFilterHistory(expr)
+	m = m.pushFilterHistory(`{"other":1}`)
+	m = m.pushFilterHistory(expr) // re-push same expr — should deduplicate
+
+	if len(m.filterHistory) != 2 {
+		t.Errorf("filterHistory len = %d; want 2 (deduplicated)", len(m.filterHistory))
+	}
+	if m.filterHistory[0] != expr {
+		t.Errorf("filterHistory[0] = %q; want %q (most recent)", m.filterHistory[0], expr)
+	}
+}
+
+func TestUpdate_FilterHistory_CapsAtMax(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+
+	for i := 0; i < 25; i++ {
+		m = m.pushFilterHistory(fmt.Sprintf(`{"i":%d}`, i))
+	}
+
+	if len(m.filterHistory) > maxFilterHistory {
+		t.Errorf("filterHistory len = %d; must not exceed %d", len(m.filterHistory), maxFilterHistory)
+	}
+}
+
+func TestUpdate_FilterHistory_NavigateUpAndDown(t *testing.T) {
+	m := newTestModel(nil, nil, nil, nil)
+	m.db = "db"
+	m.collection = "col"
+
+	// Pre-seed history directly.
+	m = m.pushFilterHistory(`{"a":1}`)
+	m = m.pushFilterHistory(`{"b":2}`)
+	// filterHistory is now: [{"b":2}, {"a":1}] (newest first)
+
+	// Open filter mode — prefilled with current filterExpr (""), so clear it.
+	m, _ = pressKey(m, "/")
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU}) // clear input
+	// Type a fresh draft.
+	for _, r := range "draft" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Press Up — should show history[0] (newest = {"b":2}).
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.input.Value() != `{"b":2}` {
+		t.Errorf("after ↑: input = %q; want %q", m.input.Value(), `{"b":2}`)
+	}
+	if m.filterHistoryCursor != 0 {
+		t.Errorf("filterHistoryCursor = %d; want 0", m.filterHistoryCursor)
+	}
+
+	// Press Up again — should show history[1] ({"a":1}).
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if m.input.Value() != `{"a":1}` {
+		t.Errorf("after ↑↑: input = %q; want %q", m.input.Value(), `{"a":1}`)
+	}
+
+	// Press Down — back to history[0].
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.input.Value() != `{"b":2}` {
+		t.Errorf("after ↑↑↓: input = %q; want %q", m.input.Value(), `{"b":2}`)
+	}
+
+	// Press Down again — should restore draft.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if m.input.Value() != "draft" {
+		t.Errorf("after ↑↑↓↓: input = %q; want draft restored", m.input.Value())
+	}
+	if m.filterHistoryCursor != -1 {
+		t.Errorf("filterHistoryCursor = %d; want -1 (back to editing)", m.filterHistoryCursor)
+	}
 }
 
 // ── Ensure parseSort is exercised directly (exported path) ────────────────────

@@ -44,7 +44,7 @@ func Default() *Map {
 		PageUp:   key.NewBinding(key.WithKeys("ctrl+u", "pgup"), key.WithHelp("ctrl+u/pgup", "page up")),
 		PageDown: key.NewBinding(key.WithKeys("ctrl+d", "pgdown"), key.WithHelp("ctrl+d/pgdn", "page down")),
 
-		Select:  key.NewBinding(key.WithKeys("enter", " "), key.WithHelp("enter", "select")),
+		Select:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
 		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		Refresh: key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),
 		Filter:  key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),

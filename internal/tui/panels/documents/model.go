@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/saheersk/lazymongo/internal/tui/keymap"
 	"github.com/saheersk/lazymongo/internal/tui/style"
+	"github.com/saheersk/lazymongo/internal/util"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -21,6 +22,9 @@ type ReplaceFn func(db, col string, id interface{}, doc bson.M) tea.Cmd
 
 // DeleteFn deletes a document by _id and returns a DocumentDeleted message.
 type DeleteFn func(db, col string, id interface{}) tea.Cmd
+
+// BulkDeleteFn deletes multiple documents by _id and returns a BulkDeleted message.
+type BulkDeleteFn func(db, col string, ids []interface{}) tea.Cmd
 
 // AggregateFn runs a pipeline and returns an AggregateResult message.
 type AggregateFn func(db, col string, pipeline bson.A) tea.Cmd
@@ -58,7 +62,16 @@ type Model struct {
 	input     textinput.Model
 	inputErr  string
 
-	deleteConfirm bool // waiting for y/N confirmation before deleting
+	// filter history — ↑/↓ in the filter bar navigates recent expressions
+	filterHistory       []string // newest first, max 20
+	filterHistoryCursor int      // -1 = editing fresh input, 0+ = navigating
+	filterHistoryDraft  string   // input saved before navigation began
+
+	// multi-select — space toggles, D bulk-deletes
+	selectedIDs map[string]interface{} // FormatValue(_id) → raw _id
+
+	deleteConfirm     bool // waiting for y/N confirmation before deleting single doc
+	bulkDeleteConfirm bool // waiting for y/N confirmation before bulk delete
 
 	aggMode     bool   // true → showing aggregate results, not the live collection
 	aggPipeline string // raw pipeline text used in the last aggregate run
@@ -70,12 +83,13 @@ type Model struct {
 
 	width, height int
 
-	fetchPage   FetchPageFn
-	insertFn    InsertFn
-	replaceFn   ReplaceFn
-	deleteFn    DeleteFn
-	aggregateFn AggregateFn
-	exportFn    ExportFn
+	fetchPage    FetchPageFn
+	insertFn     InsertFn
+	replaceFn    ReplaceFn
+	deleteFn     DeleteFn
+	bulkDeleteFn BulkDeleteFn
+	aggregateFn  AggregateFn
+	exportFn     ExportFn
 
 	editor string // editor binary (e.g. "vim", "nvim", "nano")
 
@@ -91,6 +105,7 @@ func New(th *style.Theme, km *keymap.Map,
 	insertFn InsertFn,
 	replaceFn ReplaceFn,
 	deleteFn DeleteFn,
+	bulkDeleteFn BulkDeleteFn,
 	aggregateFn AggregateFn,
 	exportFn ExportFn,
 ) Model {
@@ -101,17 +116,20 @@ func New(th *style.Theme, km *keymap.Map,
 	ti.CharLimit = 256
 
 	return Model{
-		pageSize:    50,
-		fetchPage:   fetchPage,
-		insertFn:    insertFn,
-		replaceFn:   replaceFn,
-		deleteFn:    deleteFn,
-		aggregateFn: aggregateFn,
-		exportFn:    exportFn,
-		spinner:     sp,
-		input:       ti,
-		th:          th,
-		km:          km,
+		pageSize:            50,
+		fetchPage:           fetchPage,
+		insertFn:            insertFn,
+		replaceFn:           replaceFn,
+		deleteFn:            deleteFn,
+		bulkDeleteFn:        bulkDeleteFn,
+		aggregateFn:         aggregateFn,
+		exportFn:            exportFn,
+		spinner:             sp,
+		input:               ti,
+		filterHistoryCursor: -1,
+		selectedIDs:         map[string]interface{}{},
+		th:                  th,
+		km:                  km,
 	}
 }
 
@@ -127,7 +145,22 @@ func (m Model) SetEditor(e string) Model {
 // interaction (filter/sort bar or delete confirmation). The app uses
 // this to bypass global key handlers so keystrokes like q, h, esc don't
 // accidentally trigger navigation while the user is interacting.
-func (m Model) InInputMode() bool { return m.mode != modeNone || m.deleteConfirm }
+func (m Model) InInputMode() bool {
+	return m.mode != modeNone || m.deleteConfirm || m.bulkDeleteConfirm
+}
+
+// SelectionCount returns how many documents are currently marked for bulk ops.
+func (m Model) SelectionCount() int { return len(m.selectedIDs) }
+
+// isSelected returns whether the doc at the given cursor position is selected.
+func (m Model) isSelected(doc bson.M) bool {
+	if doc == nil || len(m.selectedIDs) == 0 {
+		return false
+	}
+	key := util.FormatValue(doc["_id"])
+	_, ok := m.selectedIDs[key]
+	return ok
+}
 
 // DB returns the currently loaded database name.
 func (m Model) DB() string { return m.db }

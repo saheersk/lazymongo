@@ -94,6 +94,24 @@ type App struct {
 	exportDirInput     textinput.Model
 	exportDocsFn       func(db, col string, filter bson.M, sort bson.D, format string, limit int, outDir string) tea.Cmd
 
+	// Explain plan overlay
+	showExplain    bool
+	explainLoading bool
+	explainStats   *msg.ExplainStats
+
+	// Schema inference overlay
+	showSchema    bool
+	schemaLoading bool
+	schemaResult  *msg.SchemaResult
+	schemaScroll  int
+
+	// Import overlay
+	showImport         bool
+	importInput        textinput.Model
+	importLoading      bool
+	importErr          error
+	importCompletions  []string // tab-completion candidates
+
 	sidebar   sidebar.Model
 	documents documents.Model
 	detail    detail.Model
@@ -164,6 +182,13 @@ func New(client *mongo.Client, themeName, editor string, keybindOverrides map[st
 		return func() tea.Msg {
 			err := client.DeleteOne(db, col, id)
 			return msg.DocumentDeleted{Err: err}
+		}
+	}
+
+	bulkDeleteDoc := func(db, col string, ids []interface{}) tea.Cmd {
+		return func() tea.Msg {
+			count, err := client.DeleteMany(db, col, ids)
+			return msg.BulkDeleted{Count: count, Err: err}
 		}
 	}
 
@@ -266,7 +291,7 @@ func New(client *mongo.Client, themeName, editor string, keybindOverrides map[st
 		themeName:    themeName,
 		focus:        focusSidebar,
 		sidebar:  sidebar.New(th, km, fetchDBs, fetchCols),
-		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, aggregateDocs,
+		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, bulkDeleteDoc, aggregateDocs,
 			func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd {
 				return exportDocs(db, col, filter, sort, format, 0, "")
 			}).SetEditor(editor),
@@ -382,6 +407,82 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if a.showColStats {
 			// Any key closes the stats overlay
 			a.showColStats = false
+			return &a, nil
+		}
+
+		// Explain plan overlay
+		if a.showExplain && !a.explainLoading {
+			switch message.String() {
+			// j/k scroll is not needed — explain is a fixed small card
+			default:
+				a.showExplain = false
+			}
+			return &a, nil
+		}
+
+		// Schema overlay: j/k scroll; any other key closes
+		if a.showSchema && !a.schemaLoading {
+			switch message.String() {
+			case "j", "down":
+				if a.schemaResult != nil && a.schemaScroll < len(a.schemaResult.Fields)-1 {
+					a.schemaScroll++
+				}
+			case "k", "up":
+				if a.schemaScroll > 0 {
+					a.schemaScroll--
+				}
+			default:
+				a.showSchema = false
+				a.schemaScroll = 0
+			}
+			return &a, nil
+		}
+
+		// Import overlay
+		if a.showImport {
+			if a.importLoading {
+				return &a, nil // swallow keys while importing
+			}
+			switch message.String() {
+			case "esc":
+				a.showImport = false
+				a.importInput.SetValue("")
+				a.importErr = nil
+				a.importCompletions = nil
+			case "enter":
+				path := strings.TrimSpace(a.importInput.Value())
+				if path == "" {
+					return &a, nil
+				}
+				a.importCompletions = nil
+				a.importLoading = true
+				a.importErr = nil
+				db, col := a.currentDBCol()
+				c := a.client
+				return &a, func() tea.Msg {
+					docs, parseErr := util.ParseImportFile(path)
+					if parseErr != nil {
+						return msg.ImportDone{Err: parseErr}
+					}
+					inserted, errs := c.InsertMany(db, col, docs)
+					var firstErr error
+					if len(errs) > 0 {
+						firstErr = errs[0]
+					}
+					return msg.ImportDone{Inserted: inserted, Failed: len(docs) - inserted, Err: firstErr}
+				}
+			case "tab":
+				completed, matches := tabCompleteImportPath(strings.TrimSpace(a.importInput.Value()))
+				a.importCompletions = matches
+				a.importInput.SetValue(completed)
+				a.importInput.CursorEnd()
+				return &a, nil
+			default:
+				a.importCompletions = nil
+				var tiCmd tea.Cmd
+				a.importInput, tiCmd = a.importInput.Update(message)
+				return &a, tiCmd
+			}
 			return &a, nil
 		}
 
@@ -721,6 +822,71 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				a = a.applyLayout()
 			}
 			return &a, tea.Batch(cmds...)
+		}
+
+		// E → explain query plan (documents focus, collection loaded)
+		if message.String() == "E" && a.focus == focusDocuments {
+			db, col := a.currentDBCol()
+			if db == "" || col == "" {
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: "select a collection first"})
+				return &a, sbCmd
+			}
+			a.showExplain = true
+			a.explainLoading = true
+			a.explainStats = nil
+			filter := a.documents.Filter()
+			sortD := a.documents.SortDoc()
+			c := a.client
+			return &a, func() tea.Msg {
+				stats, err := c.ExplainQuery(db, col, filter, sortD)
+				if err != nil {
+					stats.Err = err
+				}
+				return msg.ExplainLoaded{Stats: stats}
+			}
+		}
+
+		// S → schema inference (documents focus, collection loaded)
+		if message.String() == "S" && a.focus == focusDocuments {
+			db, col := a.currentDBCol()
+			if db == "" || col == "" {
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: "select a collection first"})
+				return &a, sbCmd
+			}
+			a.showSchema = true
+			a.schemaLoading = true
+			a.schemaResult = nil
+			a.schemaScroll = 0
+			c := a.client
+			return &a, func() tea.Msg {
+				result, err := c.SampleSchema(db, col, 100)
+				if err != nil {
+					result.Err = err
+				}
+				return msg.SchemaLoaded{Result: result}
+			}
+		}
+
+		// i → import documents from file (documents focus, collection loaded)
+		if message.String() == "i" && a.focus == focusDocuments {
+			db, col := a.currentDBCol()
+			if db == "" || col == "" {
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: "select a collection first"})
+				return &a, sbCmd
+			}
+			_ = db
+			_ = col
+			ti := textinput.New()
+			ti.Placeholder = "path/to/file.json  (json, jsonl, csv)"
+			ti.CharLimit = 512
+			a.importInput = ti
+			a.importLoading = false
+			a.importErr = nil
+			a.showImport = true
+			return &a, a.importInput.Focus()
 		}
 
 		// Collection management keys (sidebar focus, not in search mode)
@@ -1131,6 +1297,35 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, sbCmd)
 
+	case msg.ExplainLoaded:
+		a.explainLoading = false
+		stats := message.Stats
+		a.explainStats = &stats
+
+	case msg.SchemaLoaded:
+		a.schemaLoading = false
+		result := message.Result
+		a.schemaResult = &result
+
+	case msg.ImportDone:
+		a.importLoading = false
+		if message.Err != nil {
+			a.importErr = message.Err
+		} else {
+			a.showImport = false
+			a.importInput.SetValue("")
+			a.importErr = nil
+			text := fmt.Sprintf("imported %d documents", message.Inserted)
+			if message.Failed > 0 {
+				text += fmt.Sprintf("  (%d failed)", message.Failed)
+			}
+			var docCmd, sbCmd tea.Cmd
+			db, col := a.currentDBCol()
+			a.documents, docCmd = a.documents.Update(msg.CollectionSelected{DB: db, Collection: col})
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: text})
+			cmds = append(cmds, docCmd, sbCmd)
+		}
+
 	case msg.StatusUpdate:
 		var sbCmd tea.Cmd
 		a.statusbar, sbCmd = a.statusbar.Update(message)
@@ -1177,6 +1372,11 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if a.showExportPicker && a.exportField == 2 {
 			var tiCmd tea.Cmd
 			a.exportDirInput, tiCmd = a.exportDirInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
+		if a.showImport {
+			var tiCmd tea.Cmd
+			a.importInput, tiCmd = a.importInput.Update(message)
 			cmds = append(cmds, tiCmd)
 		}
 	}
@@ -1228,6 +1428,15 @@ func (a App) View() string {
 	}
 	if a.showColStats {
 		return renderColStats(base, a.width, a.height, a.th, a.colStatsDB, a.colStatsCol, a.colStatsLoading, a.colStatsData, a.colStatsErr)
+	}
+	if a.showExplain {
+		return renderExplain(base, a.width, a.height, a.th, a.explainLoading, a.explainStats)
+	}
+	if a.showSchema {
+		return renderSchema(base, a.width, a.height, a.th, a.schemaLoading, a.schemaResult, a.schemaScroll)
+	}
+	if a.showImport {
+		return renderImport(base, a.width, a.height, a.th, a.importInput.View(), a.importLoading, a.importErr, a.importCompletions)
 	}
 	if a.showCreateCol {
 		return renderCreateCol(base, a.width, a.height, a.th, a.createColDB, a.createColInput.View())
@@ -1333,13 +1542,18 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 			{"ctrl+d / ctrl+u", "next / previous page"},
 			{"enter", "open detail panel"},
 			{"n / e / d", "new / edit / delete doc"},
-			{"/", "filter  (MongoDB query JSON)"},
+			{"c", "clone doc (edit copy with new _id)"},
+			{"space", "toggle select  ·  D  bulk delete selected"},
+			{"/", "filter  (MongoDB query JSON  ·  ↑/↓ history)"},
 			{"s", "sort  (field / -field / {…})"},
 			{"r", "reset filter and sort"},
 			{"a", "aggregate pipeline  ($EDITOR)"},
 			{"I", "toggle index panel"},
 			{"y / Y", "copy _id / full JSON"},
-			{"x / X", "export  (format picker → JSON or CSV, limit 0 = unlimited)"},
+			{"x / X", "export  (JSON or CSV, with filter + limit)"},
+			{"E", "explain query plan  (index usage + timing)"},
+			{"S", "schema inference  (sample 100 docs, field types)"},
+			{"i", "import documents  (json / jsonl / csv)"},
 		}},
 		{"Index panel", [][2]string{
 			{"n / d", "create / drop index"},
@@ -1899,4 +2113,345 @@ func (a App) currentDBCol() (db, col string) {
 		}
 	}
 	return s, ""
+}
+
+// renderExplain overlays the explain-plan result card.
+func renderExplain(base string, w, h int, th *style.Theme, loading bool, stats *msg.ExplainStats) string {
+	boxW := 60
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 36 {
+		boxW = 36
+	}
+
+	titleLine := th.PanelTitle.Width(boxW).Render("  EXPLAIN QUERY PLAN")
+
+	kw := 22
+	stat := func(label, value string) string {
+		return th.HelpKey.Render(fmt.Sprintf("  %-*s", kw, label)) + "  " + th.HelpDesc.Render(value)
+	}
+
+	var rows []string
+	rows = append(rows, titleLine, "")
+
+	if loading {
+		rows = append(rows, th.DimText.Render("  running explain…"))
+	} else if stats != nil && stats.Err != nil {
+		rows = append(rows, th.ErrText.Render("  error: "+stats.Err.Error()))
+	} else if stats != nil {
+		scanType := "COLLSCAN"
+		if stats.IndexUsed != "" {
+			scanType = "IXSCAN"
+		}
+		rows = append(rows,
+			stat("Collection:", stats.DB+"."+stats.Col),
+			stat("Scan type:", scanType),
+		)
+		if stats.IndexUsed != "" {
+			rows = append(rows, stat("Index used:", stats.IndexUsed))
+		}
+		rows = append(rows,
+			"",
+			stat("Docs returned:", fmt.Sprintf("%d", stats.NReturned)),
+			stat("Docs examined:", fmt.Sprintf("%d", stats.DocsExamined)),
+			stat("Keys examined:", fmt.Sprintf("%d", stats.KeysExamined)),
+			stat("Execution time:", fmt.Sprintf("%d ms", stats.ExecutionTimeMs)),
+		)
+		// Efficiency advisory
+		if stats.IndexUsed == "" && stats.DocsExamined > 0 {
+			rows = append(rows, "", th.ErrText.Render("  ⚠ full collection scan — consider adding an index"))
+		} else if stats.DocsExamined > 0 && stats.NReturned > 0 {
+			ratio := float64(stats.DocsExamined) / float64(stats.NReturned)
+			if ratio > 10 {
+				rows = append(rows, "", th.ErrText.Render(fmt.Sprintf("  ⚠ examined %.0f× more docs than returned — index selectivity is low", ratio)))
+			} else {
+				rows = append(rows, "", th.StatusFilter.Render("  ✓ index scan is efficient"))
+			}
+		}
+	}
+
+	rows = append(rows, "", th.DimText.Render("  press any key to close"))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderSchema overlays the schema-inference results table.
+func renderSchema(base string, w, h int, th *style.Theme, loading bool, result *msg.SchemaResult, scroll int) string {
+	boxW := 66
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 40 {
+		boxW = 40
+	}
+
+	title := "  SCHEMA INFERENCE"
+	if result != nil && result.Err == nil {
+		title = fmt.Sprintf("  SCHEMA  %s.%s  (sampled %d docs)", result.DB, result.Col, result.SampleSize)
+	}
+	titleLine := th.PanelTitle.Width(boxW).Render(title)
+
+	var rows []string
+	rows = append(rows, titleLine, "")
+
+	if loading {
+		rows = append(rows, th.DimText.Render("  sampling documents…"))
+	} else if result != nil && result.Err != nil {
+		rows = append(rows, th.ErrText.Render("  error: "+result.Err.Error()))
+	} else if result != nil && len(result.Fields) > 0 {
+		hdr := fmt.Sprintf("  %-28s  %-20s  %s", "FIELD", "TYPE(S)", "PRESENT")
+		rows = append(rows,
+			th.ColHeader.Render(hdr),
+			th.TableDivider.Render("  "+strings.Repeat("─", boxW-4)),
+		)
+
+		// visible rows: box height minus fixed lines (title+blank+header+divider+blank+hint)
+		visible := h - 12
+		if visible < 3 {
+			visible = 3
+		}
+		fields := result.Fields
+		if scroll >= len(fields) {
+			scroll = len(fields) - 1
+		}
+		if scroll < 0 {
+			scroll = 0
+		}
+		end := scroll + visible
+		if end > len(fields) {
+			end = len(fields)
+		}
+
+		for _, f := range fields[scroll:end] {
+			pct := ""
+			if result.SampleSize > 0 {
+				pct = fmt.Sprintf("%d%%", 100*f.Count/result.SampleSize)
+			}
+			var typeParts []string
+			for _, tf := range f.Types {
+				part := tf.Type
+				if len(f.Types) > 1 {
+					part += fmt.Sprintf("(%d)", tf.Count)
+				}
+				typeParts = append(typeParts, part)
+				if len(strings.Join(typeParts, " | ")) > 18 {
+					break
+				}
+			}
+			typeStr := strings.Join(typeParts, " | ")
+
+			name := f.Name
+			nameRunes := []rune(name)
+			if len(nameRunes) > 26 {
+				name = string(nameRunes[:25]) + "…"
+			}
+			row := fmt.Sprintf("  %-28s  %-20s  %s",
+				th.HelpKey.Render(name),
+				th.HelpDesc.Render(typeStr),
+				th.StatusPager.Render(pct),
+			)
+			rows = append(rows, row)
+		}
+
+		scrollHint := "  press any key to close"
+		if len(fields) > visible {
+			scrollHint = fmt.Sprintf("  j/k scroll  %d-%d of %d    any other key closes", scroll+1, end, len(fields))
+		}
+		rows = append(rows, "", th.DimText.Render(scrollHint))
+	} else if result != nil {
+		rows = append(rows, th.DimText.Render("  no fields found in sampled documents"))
+		rows = append(rows, "", th.DimText.Render("  press any key to close"))
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderImport overlays the import-from-file dialog.
+func renderImport(base string, w, h int, th *style.Theme, inputView string, loading bool, importErr error, completions []string) string {
+	boxW := 76
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 40 {
+		boxW = 40
+	}
+
+	titleLine := th.PanelTitle.Width(boxW).Render("  IMPORT DOCUMENTS")
+
+	var rows []string
+	rows = append(rows,
+		titleLine,
+		"",
+		th.DimText.Render("  File path:"),
+		"  "+inputView,
+		th.DimText.Render("  .json  .jsonl  .ndjson  .csv  ·  ~/  for home dir  ·  tab complete"),
+	)
+
+	// ── tab-completion matches ─────────────────────────────────────────────
+	const maxShown = 3
+	if len(completions) > 0 {
+		rows = append(rows, "")
+		shown := completions
+		extra := 0
+		if len(completions) > maxShown {
+			shown = completions[:maxShown]
+			extra = len(completions) - maxShown
+		}
+		var names []string
+		for _, c := range shown {
+			names = append(names, filepath.Base(c)+func() string {
+				if strings.HasSuffix(c, "/") {
+					return "/"
+				}
+				return ""
+			}())
+		}
+		line := "  " + strings.Join(names, "   ")
+		if extra > 0 {
+			line += "   " + th.DimText.Render(fmt.Sprintf("… %d more", extra))
+		}
+		rows = append(rows, th.HelpDesc.Render(line))
+	} else {
+		rows = append(rows, "")
+	}
+
+	if loading {
+		rows = append(rows, th.DimText.Render("  importing… (this may take a moment for large files)"))
+	} else if importErr != nil {
+		errStr := importErr.Error()
+		errRunes := []rune(errStr)
+		if len(errRunes) > boxW-4 {
+			errStr = string(errRunes[:boxW-5]) + "…"
+		}
+		rows = append(rows,
+			th.ErrText.Render("  error: "+errStr),
+			"",
+			th.DimText.Render("  tab complete  enter try again  esc cancel"),
+		)
+	} else {
+		rows = append(rows, th.DimText.Render("  tab complete  enter import  esc cancel"))
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// tabCompleteImportPath returns the longest unambiguous completion of input and
+// the full list of matching filesystem entries.
+func tabCompleteImportPath(input string) (completed string, matches []string) {
+	// Expand a leading ~ so os.ReadDir works.
+	expanded := input
+	tilde := false
+	if input == "~" || input == "~/" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			expanded = home + "/"
+			tilde = true
+		}
+	} else if strings.HasPrefix(input, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			expanded = filepath.Join(home, input[2:])
+			if strings.HasSuffix(input, "/") {
+				expanded += "/"
+			}
+			tilde = true
+		}
+	}
+
+	var dir, prefix string
+	if expanded == "" {
+		dir = "."
+		prefix = ""
+	} else if strings.HasSuffix(expanded, "/") {
+		dir = expanded
+		prefix = ""
+	} else {
+		dir = filepath.Dir(expanded)
+		prefix = filepath.Base(expanded)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return input, nil
+	}
+
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if e.IsDir() {
+			full += "/"
+		}
+		matches = append(matches, full)
+	}
+
+	if len(matches) == 0 {
+		return input, nil
+	}
+
+	// Restore ~ prefix for display if original input used it.
+	restoreTilde := func(p string) string {
+		if !tilde {
+			return p
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return p
+		}
+		if strings.HasPrefix(p, home+"/") {
+			return "~/" + p[len(home)+1:]
+		}
+		if p == home {
+			return "~"
+		}
+		return p
+	}
+
+	if len(matches) == 1 {
+		return restoreTilde(matches[0]), matches
+	}
+
+	// Multiple matches: advance to the longest common prefix.
+	lcp := matches[0]
+	for _, m := range matches[1:] {
+		lcp = longestCommonPrefix(lcp, m)
+	}
+	if len(lcp) > len(expanded) {
+		return restoreTilde(lcp), matches
+	}
+	return input, matches
+}
+
+func longestCommonPrefix(a, b string) string {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return a[:i]
+		}
+	}
+	return a[:n]
 }
