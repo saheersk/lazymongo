@@ -77,6 +77,8 @@ type Model struct {
 	aggregateFn AggregateFn
 	exportFn    ExportFn
 
+	editor string // editor binary (e.g. "vim", "nvim", "nano")
+
 	spinner spinner.Model
 	th      *style.Theme
 	km      *keymap.Map
@@ -111,6 +113,14 @@ func New(th *style.Theme, km *keymap.Map,
 		th:          th,
 		km:          km,
 	}
+}
+
+// SetEditor sets the editor binary used when opening documents for editing.
+func (m Model) SetEditor(e string) Model {
+	if e != "" {
+		m.editor = e
+	}
+	return m
 }
 
 // InInputMode reports whether the panel has captured focus for a modal

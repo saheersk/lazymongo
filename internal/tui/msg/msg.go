@@ -217,3 +217,6 @@ type StatusUpdate struct {
 	Text  string
 	IsErr bool
 }
+
+// ClearFlash is sent by a timer command to dismiss a transient status message.
+type ClearFlash struct{}

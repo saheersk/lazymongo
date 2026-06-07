@@ -417,12 +417,13 @@ func (m Model) openInput(mode inputMode, prefill string) (Model, tea.Cmd) {
 
 // ── editor ────────────────────────────────────────────────────────────────────
 
-const newDocTemplate = `{
-
-}`
+func newDocTemplate() string {
+	id := bson.NewObjectID()
+	return fmt.Sprintf("{\n  \"_id\": { \"$oid\": \"%s\" }\n}", id.Hex())
+}
 
 func (m Model) openEditorNew() (Model, tea.Cmd) {
-	cmd, err := buildEditorCmd(newDocTemplate)
+	cmd, err := buildEditorCmd(newDocTemplate(), m.editor)
 	if err != nil {
 		return m, statusCmd("error: " + err.Error())
 	}
@@ -446,7 +447,7 @@ func (m Model) openEditorEdit(doc bson.M) (Model, tea.Cmd) {
 	}
 	origID := doc["_id"]
 
-	cmd, err := buildEditorCmd(raw)
+	cmd, err := buildEditorCmd(raw, m.editor)
 	if err != nil {
 		return m, statusCmd("error: " + err.Error())
 	}
@@ -472,7 +473,7 @@ func (m Model) openAggregateEditor() (Model, tea.Cmd) {
 	if content == "" {
 		content = aggTemplate
 	}
-	ec, err := buildEditorCmd(content)
+	ec, err := buildEditorCmd(content, m.editor)
 	if err != nil {
 		return m, statusCmd("error: " + err.Error())
 	}
@@ -502,7 +503,7 @@ type editorCmd struct {
 	path string
 }
 
-func buildEditorCmd(content string) (editorCmd, error) {
+func buildEditorCmd(content, editor string) (editorCmd, error) {
 	f, err := os.CreateTemp("", "lazymongo-*.json")
 	if err != nil {
 		return editorCmd{}, err
@@ -514,12 +515,8 @@ func buildEditorCmd(content string) (editorCmd, error) {
 	}
 	f.Close()
 
-	editor := os.Getenv("EDITOR")
 	if editor == "" {
-		editor = os.Getenv("VISUAL")
-	}
-	if editor == "" {
-		editor = "vi"
+		editor = "vim"
 	}
 
 	// Support editors with args, e.g. "code --wait"

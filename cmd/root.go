@@ -105,7 +105,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Disconnect()
 
-	app := tui.New(client, themeName, cfg.UI.Keybindings)
+	app := tui.New(client, themeName, cfg.EditorCmd(), cfg.UI.Keybindings)
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

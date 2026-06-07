@@ -28,9 +28,18 @@ func (m Model) renderInner() string {
 	if title == "" {
 		title = "DOCUMENTS"
 	}
-	// Show aggregate mode badge.
+	// Show aggregate mode badge with truncated pipeline preview.
 	if m.aggMode {
-		title += "  " + m.th.ErrText.Render("[AGG]")
+		badge := "AGG"
+		if m.aggPipeline != "" {
+			p := strings.Join(strings.Fields(m.aggPipeline), " ")
+			runes := []rune(p)
+			if len(runes) > 22 {
+				p = string(runes[:21]) + "…"
+			}
+			badge = "AGG: " + p
+		}
+		title += "  " + m.th.ErrText.Render("["+badge+"]")
 	}
 	// Show active filter/sort badges in the title.
 	if m.filterExpr != "" {
@@ -128,15 +137,25 @@ func (m Model) renderBottom() string {
 	// ── delete confirmation ────────────────────────────────────────────────
 	if m.deleteConfirm {
 		doc := m.ActiveDoc()
-		idStr := ""
+		label := ""
 		if doc != nil {
-			idStr = util.FormatValue(doc["_id"])
-			if len(idStr) > 20 {
-				idStr = idStr[:19] + "…"
+			// Prefer a human-readable field over the raw _id.
+			for _, field := range []string{"name", "email", "title", "username", "slug", "label"} {
+				if v, ok := doc[field]; ok {
+					label = util.FormatValue(v)
+					break
+				}
+			}
+			if label == "" {
+				label = util.FormatValue(doc["_id"])
+			}
+			runes := []rune(label)
+			if len(runes) > 28 {
+				label = string(runes[:27]) + "…"
 			}
 		}
 		bar := m.th.ErrText.Render("  Delete ") +
-			m.th.DimText.Render(idStr) +
+			m.th.DimText.Render(label) +
 			m.th.ErrText.Render("?  ") +
 			m.th.HelpKey.Render("y") + m.th.HelpDesc.Render(" yes  ") +
 			m.th.HelpKey.Render("any") + m.th.HelpDesc.Render(" cancel")
@@ -193,8 +212,8 @@ func (m Model) renderBottom() string {
 		hints = append(hints, m.th.HelpKey.Render("d")+" "+m.th.HelpDesc.Render("delete"))
 		hints = append(hints, m.th.HelpKey.Render("/")+" "+m.th.HelpDesc.Render("filter"))
 		hints = append(hints, m.th.HelpKey.Render("s")+" "+m.th.HelpDesc.Render("sort"))
-		hints = append(hints, m.th.HelpKey.Render("a")+" "+m.th.HelpDesc.Render("aggregate"))
-		hints = append(hints, m.th.HelpKey.Render("I")+" "+m.th.HelpDesc.Render("indexes"))
+		hints = append(hints, m.th.HelpKey.Render("a")+" "+m.th.HelpDesc.Render("agg"))
+		hints = append(hints, m.th.HelpKey.Render("y/Y")+" "+m.th.HelpDesc.Render("copy"))
 		hints = append(hints, m.th.HelpKey.Render("x")+" "+m.th.HelpDesc.Render("export"))
 		if m.filterExpr != "" || m.sortExpr != "" {
 			hints = append(hints, m.th.HelpKey.Render("r")+" "+m.th.HelpDesc.Render("reset"))
@@ -240,8 +259,8 @@ func (m Model) renderDocRow(idx int, widths []int) string {
 func (m Model) renderPager() string {
 	from := m.page*m.pageSize + 1
 	to := from + len(m.docs) - 1
-	info := fmt.Sprintf("  %d-%d of %d  •  page %d/%d",
-		from, to, m.total, m.page+1, m.pageCount())
+	info := fmt.Sprintf("  %d-%d of %d  •  pg %d/%d  •  %d/pg",
+		from, to, m.total, m.page+1, m.pageCount(), m.pageSize)
 	return m.th.StatusPager.Render(info)
 }
 

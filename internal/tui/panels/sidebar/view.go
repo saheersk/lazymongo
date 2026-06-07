@@ -34,6 +34,10 @@ func (m Model) renderInner() string {
 	header := m.th.PanelTitle.Width(innerW).Render("  DATABASES")
 
 	bottomBar := m.renderBottomBar()
+	bottomBarH := 1
+	if m.searchMode {
+		bottomBarH = 2
+	}
 
 	// innerH = rows inside the border (excl. border lines themselves)
 	innerH := m.height - 2
@@ -43,13 +47,13 @@ func (m Model) renderInner() string {
 
 	if m.loading {
 		rows := []string{header, "", "  " + m.spinner.View() + " loading…"}
-		rows = m.padToBottom(rows, innerH, bottomBar)
+		rows = m.padToBottom(rows, innerH, bottomBar, bottomBarH)
 		return strings.Join(rows, "\n")
 	}
 
 	if m.err != nil {
 		rows := []string{header, "", m.th.ErrText.Render("  " + m.err.Error())}
-		rows = m.padToBottom(rows, innerH, bottomBar)
+		rows = m.padToBottom(rows, innerH, bottomBar, bottomBarH)
 		return strings.Join(rows, "\n")
 	}
 
@@ -61,7 +65,7 @@ func (m Model) renderInner() string {
 			empty = "  no results"
 		}
 		rows := []string{header, "", m.th.DimText.Render(empty)}
-		rows = m.padToBottom(rows, innerH, bottomBar)
+		rows = m.padToBottom(rows, innerH, bottomBar, bottomBarH)
 		return strings.Join(rows, "\n")
 	}
 
@@ -79,7 +83,7 @@ func (m Model) renderInner() string {
 		rows = append(rows, m.renderVisibleItem(i, visible))
 	}
 
-	rows = m.padToBottom(rows, innerH, bottomBar)
+	rows = m.padToBottom(rows, innerH, bottomBar, bottomBarH)
 	return strings.Join(rows, "\n")
 }
 
@@ -89,7 +93,11 @@ func (m Model) renderInner() string {
 func (m Model) renderBottomBar() string {
 	if m.searchMode {
 		prompt := m.th.StatusFilter.Render("/")
-		return " " + prompt + " " + m.searchInput.View()
+		hint := m.th.DimText.Render("  db:col · enter select · esc cancel")
+		return lipgloss.JoinVertical(lipgloss.Left,
+			" "+prompt+" "+m.searchInput.View(),
+			hint,
+		)
 	}
 	k := func(s string) string { return m.th.HelpKey.Render(s) }
 	d := func(s string) string { return m.th.HelpDesc.Render(s) }
@@ -122,8 +130,13 @@ func (m Model) renderBottomBar() string {
 
 // padToBottom pads rows with blank lines then appends bottomBar so it is
 // pinned to the absolute bottom of the inner panel area (lazygit style).
-func (m Model) padToBottom(rows []string, innerH int, bottomBar string) []string {
-	filler := innerH - len(rows) - 1
+// bottomBarLines is the number of rendered lines in bottomBar (default 1).
+func (m Model) padToBottom(rows []string, innerH int, bottomBar string, bottomBarLines ...int) []string {
+	barH := 1
+	if len(bottomBarLines) > 0 && bottomBarLines[0] > 0 {
+		barH = bottomBarLines[0]
+	}
+	filler := innerH - len(rows) - barH
 	for i := 0; i < filler; i++ {
 		rows = append(rows, "")
 	}

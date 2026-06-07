@@ -4,6 +4,7 @@ package statusbar
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -81,8 +82,22 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 	case msg.StatusUpdate:
 		m.flash = message.Text
 		m.flashErr = message.IsErr
+		if message.Text != "" {
+			return m, flashTimer()
+		}
+
+	case msg.ClearFlash:
+		m.flash = ""
+		m.flashErr = false
 	}
 	return m, nil
+}
+
+func flashTimer() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(4 * time.Second)
+		return msg.ClearFlash{}
+	}
 }
 
 // View renders the full-width status bar.

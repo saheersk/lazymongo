@@ -52,6 +52,7 @@ var themeList = []string{
 type App struct {
 	width, height int
 	focus         focusedPanel
+	prevFocus     focusedPanel // focus before opening detail/index panels
 	showDetail    bool
 	showIndexes   bool
 	showHelp      bool
@@ -112,7 +113,7 @@ type App struct {
 }
 
 // New creates the root App with all panels initialised.
-func New(client *mongo.Client, themeName string, keybindOverrides map[string]string) *App {
+func New(client *mongo.Client, themeName, editor string, keybindOverrides map[string]string) *App {
 	th := style.ByName(themeName)
 	km := keymap.Default()
 	if len(keybindOverrides) > 0 {
@@ -268,9 +269,9 @@ func New(client *mongo.Client, themeName string, keybindOverrides map[string]str
 		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, aggregateDocs,
 			func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd {
 				return exportDocs(db, col, filter, sort, format, 0, "")
-			}),
+			}).SetEditor(editor),
 		detail:       detail.New(th, km),
-		indexes:      indexes.New(th, km, fetchIndexes, createIndex, dropIndex),
+		indexes:      indexes.New(th, km, fetchIndexes, createIndex, dropIndex).SetEditor(editor),
 		statusbar:    statusbar.New(th, client.URI()),
 		createColFn:  createColFn,
 		dropColFn:    dropColFn,
@@ -361,12 +362,13 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 						return msg.DatabaseDropped{DB: db, Err: a.client.DropDatabase(db)}
 					}
 				}
-				// Wrong name — flash error, leave dialog open.
+				// Wrong name — give a specific hint for near-misses.
+				errText := fmt.Sprintf("type exactly: %s", a.dropDBTarget)
+				if strings.EqualFold(typed, a.dropDBTarget) {
+					errText = fmt.Sprintf("name is case-sensitive — type exactly: %s", a.dropDBTarget)
+				}
 				var sbCmd tea.Cmd
-				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
-					Text:  "name mismatch — type the exact database name",
-					IsErr: true,
-				})
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: errText, IsErr: true})
 				return &a, sbCmd
 			default:
 				var tiCmd tea.Cmd
@@ -652,13 +654,19 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			switch a.focus {
 			case focusDetail:
 				a.showDetail = false
-				a.focus = focusDocuments
+				a.focus = a.prevFocus
+				if a.focus == focusDetail {
+					a.focus = focusDocuments
+				}
 				a = a.syncFocus()
 				a = a.applyLayout()
 				return &a, nil
 			case focusIndexes:
 				a.showIndexes = false
-				a.focus = focusDocuments
+				a.focus = a.prevFocus
+				if a.focus == focusIndexes {
+					a.focus = focusDocuments
+				}
 				a = a.syncFocus()
 				a = a.applyLayout()
 				return &a, nil
@@ -676,15 +684,19 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// 'a' opens the aggregate pipeline editor from any panel when a
-		// collection is loaded. This way focus on sidebar doesn't block it.
-		if message.String() == "a" && a.documents.Collection() != "" {
-			var cmd tea.Cmd
-			a.documents, cmd = a.documents.Update(message)
-			a.focus = focusDocuments
-			a = a.syncFocus()
-			cmds = append(cmds, cmd)
-			return &a, tea.Batch(cmds...)
+		// 'a' opens the aggregate pipeline editor when a collection is loaded.
+		if message.String() == "a" {
+			if a.documents.Collection() != "" {
+				var cmd tea.Cmd
+				a.documents, cmd = a.documents.Update(message)
+				a.focus = focusDocuments
+				a = a.syncFocus()
+				cmds = append(cmds, cmd)
+				return &a, tea.Batch(cmds...)
+			}
+			var sbCmd tea.Cmd
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{Text: "select a collection first to run an aggregate pipeline"})
+			return &a, sbCmd
 		}
 
 		// I key: toggle indexes panel (from documents focus)
@@ -703,6 +715,7 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					a.indexes, idxCmd = a.indexes.Load(db, c)
 					cmds = append(cmds, idxCmd)
 				}
+				a.prevFocus = a.focus
 				a.focus = focusIndexes
 				a = a.syncFocus()
 				a = a.applyLayout()
@@ -892,6 +905,7 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			a.showDetail = true
 			a = a.applyLayout()
 		}
+		a.prevFocus = a.focus
 		a.focus = focusDetail
 		a = a.syncFocus()
 		var cmd tea.Cmd
@@ -1325,7 +1339,7 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 			{"a", "aggregate pipeline  ($EDITOR)"},
 			{"I", "toggle index panel"},
 			{"y / Y", "copy _id / full JSON"},
-			{"x / X", "export  (format picker → JSON or CSV, up to 10,000 docs)"},
+			{"x / X", "export  (format picker → JSON or CSV, limit 0 = unlimited)"},
 		}},
 		{"Index panel", [][2]string{
 			{"n / d", "create / drop index"},
@@ -1777,7 +1791,7 @@ func renderExportPicker(base string, w, h int, th *style.Theme,
 	if exportField == 1 {
 		limitLabel = th.StatusFilter.Render("  Limit  › ") + limitView
 	} else {
-		limitLabel = th.DimText.Render("  Limit:   ") + limitView + th.DimText.Render("  (0 = all)")
+		limitLabel = th.DimText.Render("  Limit:   ") + limitView + th.DimText.Render("  (0 = unlimited)")
 	}
 
 	var dirLabel string
@@ -1787,12 +1801,15 @@ func renderExportPicker(base string, w, h int, th *style.Theme,
 		dirLabel = th.DimText.Render("  Dir:     ") + dirView
 	}
 
-	// Live preview of the full output path.
+	// Live preview of the full output path, truncated in the middle so both
+	// the directory and filename are always visible.
 	outDir := resolveExportDir(dirRaw)
 	ext := opts[cursor].ext
 	preview := filepath.Join(outDir, col+"-[date]."+ext)
-	if len([]rune(preview)) > boxW-4 {
-		preview = "…" + preview[len(preview)-(boxW-5):]
+	maxPreview := boxW - 4
+	if runes := []rune(preview); len(runes) > maxPreview {
+		half := maxPreview/2 - 1
+		preview = string(runes[:half]) + "…" + string(runes[len(runes)-half:])
 	}
 	previewLine := th.DimText.Render("  → " + preview)
 

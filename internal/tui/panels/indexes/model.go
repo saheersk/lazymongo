@@ -40,6 +40,8 @@ type Model struct {
 	createIndex  CreateIndexFn
 	dropIndex    DropIndexFn
 
+	editor string // editor binary (e.g. "vim", "nvim", "nano")
+
 	spinner spinner.Model
 	th      *style.Theme
 	km      *keymap.Map
@@ -61,6 +63,14 @@ func New(th *style.Theme, km *keymap.Map,
 		th:           th,
 		km:           km,
 	}
+}
+
+// SetEditor sets the editor binary used when creating indexes.
+func (m Model) SetEditor(e string) Model {
+	if e != "" {
+		m.editor = e
+	}
+	return m
 }
 
 // Init is a no-op; loading begins when CollectionSelected arrives.

@@ -90,17 +90,19 @@ func (c *Config) FindConnection(name string) *Connection {
 	return nil
 }
 
+// EditorCmd returns the editor to use, in priority order:
+// config file > $EDITOR > $VISUAL > vim.
 func (c *Config) EditorCmd() string {
 	if c.UI.Editor != "" {
 		return c.UI.Editor
 	}
-	if e := os.Getenv("VISUAL"); e != "" {
-		return e
-	}
 	if e := os.Getenv("EDITOR"); e != "" {
 		return e
 	}
-	return "nano"
+	if e := os.Getenv("VISUAL"); e != "" {
+		return e
+	}
+	return "vim"
 }
 
 // SaveProfile upserts a named connection profile in the config file.
@@ -176,6 +178,7 @@ func setDefaults() {
 	viper.SetDefault("ui.theme", "dark")
 	viper.SetDefault("ui.mouse", true)
 	viper.SetDefault("ui.pageSize", 50)
+	viper.SetDefault("ui.editor", "vim")
 }
 
 func configDir() (string, error) {
@@ -201,6 +204,7 @@ ui:
   theme: dark
   mouse: true
   pageSize: 50
+  editor: vim   # vim | nvim | nano | emacs | "code --wait"
 `
 	return os.WriteFile(path, []byte(content), 0o600)
 }

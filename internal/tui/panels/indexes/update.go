@@ -131,7 +131,7 @@ const indexTemplate = `{
 }`
 
 func (m Model) openCreateEditor() (Model, tea.Cmd) {
-	ec, err := buildIndexEditorCmd(indexTemplate)
+	ec, err := buildIndexEditorCmd(indexTemplate, m.editor)
 	if err != nil {
 		return m, statusCmd("error: " + err.Error())
 	}
@@ -149,7 +149,7 @@ type indexEditorCmd struct {
 	path string
 }
 
-func buildIndexEditorCmd(content string) (indexEditorCmd, error) {
+func buildIndexEditorCmd(content, editor string) (indexEditorCmd, error) {
 	f, err := os.CreateTemp("", "lazymongo-index-*.json")
 	if err != nil {
 		return indexEditorCmd{}, err
@@ -161,12 +161,8 @@ func buildIndexEditorCmd(content string) (indexEditorCmd, error) {
 	}
 	f.Close()
 
-	editor := os.Getenv("EDITOR")
 	if editor == "" {
-		editor = os.Getenv("VISUAL")
-	}
-	if editor == "" {
-		editor = "vi"
+		editor = "vim"
 	}
 
 	parts := strings.Fields(editor)
