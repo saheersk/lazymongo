@@ -25,6 +25,9 @@ type DeleteFn func(db, col string, id interface{}) tea.Cmd
 // AggregateFn runs a pipeline and returns an AggregateResult message.
 type AggregateFn func(db, col string, pipeline bson.A) tea.Cmd
 
+// ExportFn exports documents matching filter in the given format and returns an ExportDone message.
+type ExportFn func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd
+
 // inputMode distinguishes which inline bar is active.
 type inputMode int
 
@@ -72,6 +75,7 @@ type Model struct {
 	replaceFn   ReplaceFn
 	deleteFn    DeleteFn
 	aggregateFn AggregateFn
+	exportFn    ExportFn
 
 	spinner spinner.Model
 	th      *style.Theme
@@ -86,6 +90,7 @@ func New(th *style.Theme, km *keymap.Map,
 	replaceFn ReplaceFn,
 	deleteFn DeleteFn,
 	aggregateFn AggregateFn,
+	exportFn ExportFn,
 ) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -100,6 +105,7 @@ func New(th *style.Theme, km *keymap.Map,
 		replaceFn:   replaceFn,
 		deleteFn:    deleteFn,
 		aggregateFn: aggregateFn,
+		exportFn:    exportFn,
 		spinner:     sp,
 		input:       ti,
 		th:          th,
@@ -112,6 +118,21 @@ func New(th *style.Theme, km *keymap.Map,
 // this to bypass global key handlers so keystrokes like q, h, esc don't
 // accidentally trigger navigation while the user is interacting.
 func (m Model) InInputMode() bool { return m.mode != modeNone || m.deleteConfirm }
+
+// DB returns the currently loaded database name.
+func (m Model) DB() string { return m.db }
+
+// ColName returns the currently loaded collection name.
+func (m Model) ColName() string { return m.collection }
+
+// Filter returns the active query filter (nil if none).
+func (m Model) Filter() bson.M { return m.filter }
+
+// SortDoc returns the active sort document (nil if none).
+func (m Model) SortDoc() bson.D { return m.sort }
+
+// FilterExpr returns the raw filter expression string for display.
+func (m Model) FilterExpr() string { return m.filterExpr }
 
 // InAggMode reports whether aggregate results are currently displayed.
 func (m Model) InAggMode() bool { return m.aggMode }

@@ -62,6 +62,59 @@ func Default() *Map {
 	}
 }
 
+// ApplyOverrides replaces key bindings based on an action-name → key-string map.
+// Recognised action names: up, down, left, right, top, bottom, pageUp, pageDown,
+// select, back, refresh, filter, quit, help, newDoc, editDoc, deleteDoc,
+// copyID, copyDoc, aggregate, indexes.
+func (m *Map) ApplyOverrides(overrides map[string]string) {
+	for action, keys := range overrides {
+		switch action {
+		case "up":
+			m.Up = key.NewBinding(key.WithKeys(keys))
+		case "down":
+			m.Down = key.NewBinding(key.WithKeys(keys))
+		case "left":
+			m.Left = key.NewBinding(key.WithKeys(keys))
+		case "right":
+			m.Right = key.NewBinding(key.WithKeys(keys))
+		case "top":
+			m.Top = key.NewBinding(key.WithKeys(keys))
+		case "bottom":
+			m.Bottom = key.NewBinding(key.WithKeys(keys))
+		case "pageUp":
+			m.PageUp = key.NewBinding(key.WithKeys(keys))
+		case "pageDown":
+			m.PageDown = key.NewBinding(key.WithKeys(keys))
+		case "select":
+			m.Select = key.NewBinding(key.WithKeys(keys))
+		case "back":
+			m.Back = key.NewBinding(key.WithKeys(keys))
+		case "refresh":
+			m.Refresh = key.NewBinding(key.WithKeys(keys))
+		case "filter":
+			m.Filter = key.NewBinding(key.WithKeys(keys))
+		case "quit":
+			m.Quit = key.NewBinding(key.WithKeys(keys))
+		case "help":
+			m.Help = key.NewBinding(key.WithKeys(keys))
+		case "newDoc":
+			m.NewDoc = key.NewBinding(key.WithKeys(keys))
+		case "editDoc":
+			m.EditDoc = key.NewBinding(key.WithKeys(keys))
+		case "deleteDoc":
+			m.DeleteDoc = key.NewBinding(key.WithKeys(keys))
+		case "copyID":
+			m.CopyID = key.NewBinding(key.WithKeys(keys))
+		case "copyDoc":
+			m.CopyDoc = key.NewBinding(key.WithKeys(keys))
+		case "aggregate":
+			m.Aggregate = key.NewBinding(key.WithKeys(keys))
+		case "indexes":
+			m.Indexes = key.NewBinding(key.WithKeys(keys))
+		}
+	}
+}
+
 // ShortHelp returns the minimal hint shown in the footer.
 func (m *Map) ShortHelp() []key.Binding {
 	return []key.Binding{m.Up, m.Down, m.Left, m.Right, m.Select, m.Filter, m.Quit, m.Help}

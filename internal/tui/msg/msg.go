@@ -18,10 +18,11 @@ type CollectionInfo struct {
 
 // PageResult is a single page of documents returned from MongoDB.
 type PageResult struct {
-	Docs     []bson.M
-	Total    int64
-	Page     int
-	PageSize int
+	Docs       []bson.M
+	Total      int64
+	Page       int
+	PageSize   int
+	DurationMs int64
 }
 
 // ---- async result messages ----
@@ -160,6 +161,53 @@ type DocumentDeleted struct {
 type DatabaseDropped struct {
 	DB  string
 	Err error
+}
+
+// ExportDone is dispatched after an export (JSON or CSV) completes.
+type ExportDone struct {
+	Path  string
+	Count int
+	Err   error
+}
+
+// CollectionStatsDetail holds detailed collection statistics.
+type CollectionStatsDetail struct {
+	DocCount    int64
+	TotalSize   int64
+	AvgDocSize  float64
+	StorageSize int64
+	IndexCount  int
+	IndexSize   int64
+}
+
+// CollectionStatsLoaded is dispatched after collection stats are loaded.
+type CollectionStatsLoaded struct {
+	DB    string
+	Col   string
+	Stats CollectionStatsDetail
+	Err   error
+}
+
+// CollectionCreated is dispatched after a collection creation attempt.
+type CollectionCreated struct {
+	DB  string
+	Col string
+	Err error
+}
+
+// CollectionDropped is dispatched after a collection drop attempt.
+type CollectionDropped struct {
+	DB  string
+	Col string
+	Err error
+}
+
+// CollectionRenamed is dispatched after a collection rename attempt.
+type CollectionRenamed struct {
+	DB     string
+	OldCol string
+	NewCol string
+	Err    error
 }
 
 // ---- status / error ----

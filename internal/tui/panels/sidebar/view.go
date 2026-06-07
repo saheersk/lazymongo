@@ -85,6 +85,7 @@ func (m Model) renderInner() string {
 
 // renderBottomBar returns a search input line when searching, or a hint line otherwise.
 // Hints are progressively shortened so the bar never exceeds the panel width.
+// Context-sensitive hints are shown based on whether cursor is on a collection or database.
 func (m Model) renderBottomBar() string {
 	if m.searchMode {
 		prompt := m.th.StatusFilter.Render("/")
@@ -94,15 +95,29 @@ func (m Model) renderBottomBar() string {
 	d := func(s string) string { return m.th.HelpDesc.Render(s) }
 	avail := m.width - 4
 
-	full := "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help") + "  " + k("T") + " " + d("theme")
+	if m.CursorIsCollection() {
+		// Collection-level hints
+		full := "  " + k("n") + " " + d("new") + "  " + k("r") + " " + d("rename") + "  " + k("D") + " " + d("drop") + "  " + k("s") + " " + d("stats") + "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help") + "  " + k("T") + " " + d("theme")
+		if lipgloss.Width(full) <= avail {
+			return full
+		}
+		med := "  " + k("n") + " " + d("new") + "  " + k("r") + " " + d("rename") + "  " + k("D") + " " + d("drop") + "  " + k("s") + " " + d("stats") + "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help")
+		if lipgloss.Width(med) <= avail {
+			return med
+		}
+		return "  " + k("n") + "  " + k("r") + "  " + k("D") + "  " + k("s") + "  " + k("/") + "  " + k("?")
+	}
+
+	// Database-level hints
+	full := "  " + k("n") + " " + d("new col") + "  " + k("D") + " " + d("drop db") + "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help") + "  " + k("T") + " " + d("theme")
 	if lipgloss.Width(full) <= avail {
 		return full
 	}
-	med := "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help")
+	med := "  " + k("n") + " " + d("new col") + "  " + k("D") + " " + d("drop db") + "  " + k("/") + " " + d("search") + "  " + k("?") + " " + d("help")
 	if lipgloss.Width(med) <= avail {
 		return med
 	}
-	return "  " + k("/") + "  " + k("?") + "  " + k("T")
+	return "  " + k("n") + "  " + k("D") + "  " + k("/") + "  " + k("?") + "  " + k("T")
 }
 
 // padToBottom pads rows with blank lines then appends bottomBar so it is

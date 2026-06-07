@@ -22,6 +22,7 @@ type Model struct {
 	total      int64
 	page       int
 	pageCount  int
+	durationMs int64 // last query duration in milliseconds
 
 	flash    string // transient message (errors, confirmations)
 	flashErr bool
@@ -59,6 +60,7 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		if message.Err == nil {
 			m.total = message.Result.Total
 			m.page = message.Result.Page
+			m.durationMs = message.Result.DurationMs
 			ps := message.Result.PageSize
 			if ps > 0 {
 				m.pageCount = int(m.total)/ps + 1
@@ -115,9 +117,13 @@ func (m Model) View() string {
 
 	var right string
 	if m.total > 0 {
-		right = m.th.StatusPager.Render(
-			fmt.Sprintf("%d docs  pg %d/%d  ", m.total, m.page+1, m.pageCount),
-		)
+		pagerText := fmt.Sprintf("%d docs  pg %d/%d", m.total, m.page+1, m.pageCount)
+		if m.durationMs > 0 {
+			pagerText += fmt.Sprintf("  %dms", m.durationMs)
+		}
+		right = m.th.StatusPager.Render(pagerText + "  ")
+	} else if m.durationMs > 0 && m.collection != "" {
+		right = m.th.StatusPager.Render(fmt.Sprintf("%dms  ", m.durationMs))
 	}
 
 	leftMid := left + mid

@@ -195,6 +195,7 @@ func (m Model) renderBottom() string {
 		hints = append(hints, m.th.HelpKey.Render("s")+" "+m.th.HelpDesc.Render("sort"))
 		hints = append(hints, m.th.HelpKey.Render("a")+" "+m.th.HelpDesc.Render("aggregate"))
 		hints = append(hints, m.th.HelpKey.Render("I")+" "+m.th.HelpDesc.Render("indexes"))
+		hints = append(hints, m.th.HelpKey.Render("x")+" "+m.th.HelpDesc.Render("export"))
 		if m.filterExpr != "" || m.sortExpr != "" {
 			hints = append(hints, m.th.HelpKey.Render("r")+" "+m.th.HelpDesc.Render("reset"))
 		}

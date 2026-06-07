@@ -76,6 +76,19 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		flagProfile = args[0]
 	}
 
+	// If multiple profiles exist and none explicitly selected, show picker.
+	if len(cfg.Connections) > 1 && flagProfile == "" && flagURI == "" && flagHost == "" {
+		pm := &pickerModel{profiles: cfg.Connections}
+		p := tea.NewProgram(pm)
+		finalModel, err := p.Run()
+		if err != nil {
+			return fmt.Errorf("profile picker: %w", err)
+		}
+		if result, ok := finalModel.(*pickerModel); ok && !result.cancelled && result.chosen != "" {
+			flagProfile = result.chosen
+		}
+	}
+
 	uri, themeName := resolveURIAndTheme(cfg)
 
 	// --save: persist the profile before connecting, then continue.
@@ -92,7 +105,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Disconnect()
 
-	app := tui.New(client, themeName)
+	app := tui.New(client, themeName, cfg.UI.Keybindings)
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

@@ -19,10 +19,11 @@ type Connection struct {
 }
 
 type UIConfig struct {
-	Theme    string `mapstructure:"theme"    yaml:"theme,omitempty"`
-	Mouse    bool   `mapstructure:"mouse"    yaml:"mouse,omitempty"`
-	Editor   string `mapstructure:"editor"   yaml:"editor,omitempty"`
-	PageSize int    `mapstructure:"pageSize" yaml:"pageSize,omitempty"`
+	Theme       string            `mapstructure:"theme"        yaml:"theme,omitempty"`
+	Mouse       bool              `mapstructure:"mouse"        yaml:"mouse,omitempty"`
+	Editor      string            `mapstructure:"editor"       yaml:"editor,omitempty"`
+	PageSize    int               `mapstructure:"pageSize"     yaml:"pageSize,omitempty"`
+	Keybindings map[string]string `mapstructure:"keybindings"  yaml:"keybindings,omitempty"`
 }
 
 type Config struct {

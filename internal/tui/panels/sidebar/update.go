@@ -99,6 +99,7 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) openSearch() (Model, tea.Cmd) {
+	m.searchDB = m.ActiveDB() // remember current DB before cursor resets
 	m.searchMode = true
 	m.searchInput.SetValue("")
 	m.cursor = 0

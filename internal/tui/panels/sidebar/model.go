@@ -42,6 +42,7 @@ type Model struct {
 	cursor  int
 
 	searchMode  bool
+	searchDB    string // ActiveDB() captured when search opens
 	searchInput textinput.Model
 
 	focused bool
@@ -61,6 +62,15 @@ type Model struct {
 
 // InSearchMode reports whether the search bar is active.
 func (m Model) InSearchMode() bool { return m.searchMode }
+
+// SearchValue returns the current search input text.
+func (m Model) SearchValue() string { return m.searchInput.Value() }
+
+// SearchDB returns the ActiveDB captured when the search was opened.
+func (m Model) SearchDB() string { return m.searchDB }
+
+// VisibleCount returns the number of items currently visible (filtered when searching).
+func (m Model) VisibleCount() int { return len(m.visibleItems()) }
 
 // visibleItems returns the filtered item list when searching, or all items.
 //
@@ -214,6 +224,11 @@ func (m Model) ActiveCollection() string {
 		return it.name
 	}
 	return ""
+}
+
+// CursorIsCollection returns true when the cursor is on a collection item.
+func (m Model) CursorIsCollection() bool {
+	return len(m.items) > 0 && m.items[m.cursor].kind == kindCollection
 }
 
 // PreferredWidth returns the ideal sidebar panel width based on the longest

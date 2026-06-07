@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/saheersk/lazymongo/internal/tui/msg"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -19,6 +20,7 @@ type QueryOptions struct {
 
 // FindPage fetches a single page of documents from the named collection.
 func (c *Client) FindPage(dbName, colName string, q QueryOptions) (msg.PageResult, error) {
+	start := time.Now()
 	ctx, cancel := opCtx()
 	defer cancel()
 
@@ -62,9 +64,42 @@ func (c *Client) FindPage(dbName, colName string, q QueryOptions) (msg.PageResul
 	}
 
 	return msg.PageResult{
-		Docs:     docs,
-		Total:    total,
-		Page:     q.Page,
-		PageSize: q.PageSize,
+		Docs:       docs,
+		Total:      total,
+		Page:       q.Page,
+		PageSize:   q.PageSize,
+		DurationMs: time.Since(start).Milliseconds(),
 	}, nil
+}
+
+// ExportDocs fetches all documents matching filter (up to limit) for export.
+func (c *Client) ExportDocs(dbName, colName string, filter bson.M, sort bson.D, limit int) ([]bson.M, error) {
+	ctx, cancel := opCtx()
+	defer cancel()
+
+	if filter == nil {
+		filter = bson.M{}
+	}
+
+	col := c.inner.Database(dbName).Collection(colName)
+
+	findOpts := options.Find()
+	if limit > 0 {
+		findOpts.SetLimit(int64(limit))
+	}
+	if len(sort) > 0 {
+		findOpts.SetSort(sort)
+	}
+
+	cursor, err := col.Find(ctx, filter, findOpts)
+	if err != nil {
+		return nil, fmt.Errorf("find: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var docs []bson.M
+	if err := cursor.All(ctx, &docs); err != nil {
+		return nil, fmt.Errorf("cursor: %w", err)
+	}
+	return docs, nil
 }

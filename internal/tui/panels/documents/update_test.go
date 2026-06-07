@@ -39,7 +39,8 @@ func newTestModel(
 		deleteFn = func(db, col string, id interface{}) tea.Cmd { return nil }
 	}
 	aggregateFn := func(db, col string, pipeline bson.A) tea.Cmd { return nil }
-	return New(th, km, fetchPage, insertFn, replaceFn, deleteFn, aggregateFn)
+	exportFn := func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd { return nil }
+	return New(th, km, fetchPage, insertFn, replaceFn, deleteFn, aggregateFn, exportFn)
 }
 
 // pressKey simulates a key-press message.

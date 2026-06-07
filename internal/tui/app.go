@@ -4,7 +4,11 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	xansi "github.com/charmbracelet/x/ansi"
@@ -19,6 +23,7 @@ import (
 	"github.com/saheersk/lazymongo/internal/tui/panels/sidebar"
 	"github.com/saheersk/lazymongo/internal/tui/panels/statusbar"
 	"github.com/saheersk/lazymongo/internal/tui/style"
+	"github.com/saheersk/lazymongo/internal/util"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -52,15 +57,53 @@ type App struct {
 	showHelp      bool
 	showTheme     bool // theme-picker overlay
 	themeCursor   int  // cursor inside theme picker
-	showDropDB    bool              // drop-database confirmation overlay
-	dropDBTarget  string            // database name being confirmed
-	dropInput     textinput.Model   // typed confirmation input
+	showDropDB    bool            // drop-database confirmation overlay
+	dropDBTarget  string          // database name being confirmed
+	dropInput     textinput.Model // typed confirmation input
+
+	// Collection management overlays
+	showCreateCol  bool
+	createColDB    string
+	createColInput textinput.Model
+
+	showCreateDB  bool
+	createDBInput textinput.Model
+
+	showDropCol   bool
+	dropColDB     string
+	dropColTarget string
+	dropColInput  textinput.Model
+
+	showRenameCol  bool
+	renameColDB    string
+	renameColOld   string
+	renameColInput textinput.Model
+
+	showColStats    bool
+	colStatsDB      string
+	colStatsCol     string
+	colStatsData    *msg.CollectionStatsDetail
+	colStatsLoading bool
+	colStatsErr     error
+
+	showExportPicker   bool
+	exportPickerCursor int // 0 = JSON, 1 = CSV
+	exportField        int // 0 = format selector, 1 = limit input, 2 = dir input
+	exportLimitInput   textinput.Model
+	exportDirInput     textinput.Model
+	exportDocsFn       func(db, col string, filter bson.M, sort bson.D, format string, limit int, outDir string) tea.Cmd
 
 	sidebar   sidebar.Model
 	documents documents.Model
 	detail    detail.Model
 	indexes   indexes.Model
 	statusbar statusbar.Model
+
+	// Collection management callbacks
+	createColFn func(db, col string) tea.Cmd
+	dropColFn   func(db, col string) tea.Cmd
+	renameColFn func(db, oldCol, newCol string) tea.Cmd
+	loadStatsFn func(db, col string) tea.Cmd
 
 	client    *mongo.Client
 	th        *style.Theme
@@ -69,9 +112,12 @@ type App struct {
 }
 
 // New creates the root App with all panels initialised.
-func New(client *mongo.Client, themeName string) *App {
+func New(client *mongo.Client, themeName string, keybindOverrides map[string]string) *App {
 	th := style.ByName(themeName)
 	km := keymap.Default()
+	if len(keybindOverrides) > 0 {
+		km.ApplyOverrides(keybindOverrides)
+	}
 
 	fetchDBs := func() tea.Cmd {
 		return func() tea.Msg {
@@ -154,17 +200,83 @@ func New(client *mongo.Client, themeName string) *App {
 		}
 	}
 
+	exportDocs := func(db, col string, filter bson.M, sort bson.D, format string, limit int, outDir string) tea.Cmd {
+		return func() tea.Msg {
+			docs, err := client.ExportDocs(db, col, filter, sort, limit) // limit=0 → all docs
+			if err != nil {
+				return msg.ExportDone{Err: err}
+			}
+
+			dir := resolveExportDir(outDir)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return msg.ExportDone{Err: fmt.Errorf("cannot create dir %q: %w", dir, err)}
+			}
+
+			stamp := time.Now().Format("20060102-150405")
+			var data []byte
+			var path string
+			if format == "csv" {
+				cols := util.BuildColumns(docs, 20)
+				data, err = util.ToCSV(docs, cols)
+				path = filepath.Join(dir, col+"-"+stamp+".csv")
+			} else {
+				data, err = util.ToJSON(docs)
+				path = filepath.Join(dir, col+"-"+stamp+".json")
+			}
+			if err != nil {
+				return msg.ExportDone{Err: err}
+			}
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				return msg.ExportDone{Err: err}
+			}
+			return msg.ExportDone{Path: path, Count: len(docs)}
+		}
+	}
+
+	createColFn := func(db, col string) tea.Cmd {
+		return func() tea.Msg {
+			return msg.CollectionCreated{DB: db, Col: col, Err: client.CreateCollection(db, col)}
+		}
+	}
+
+	dropColFn := func(db, col string) tea.Cmd {
+		return func() tea.Msg {
+			return msg.CollectionDropped{DB: db, Col: col, Err: client.DropCollection(db, col)}
+		}
+	}
+
+	renameColFn := func(db, oldCol, newCol string) tea.Cmd {
+		return func() tea.Msg {
+			return msg.CollectionRenamed{DB: db, OldCol: oldCol, NewCol: newCol, Err: client.RenameCollection(db, oldCol, newCol)}
+		}
+	}
+
+	loadStatsFn := func(db, col string) tea.Cmd {
+		return func() tea.Msg {
+			stats, err := client.CollectionStats(db, col)
+			return msg.CollectionStatsLoaded{DB: db, Col: col, Stats: stats, Err: err}
+		}
+	}
+
 	return &App{
-		client:    client,
-		th:        th,
-		km:        km,
-		themeName: themeName,
-		focus:     focusSidebar,
-		sidebar:   sidebar.New(th, km, fetchDBs, fetchCols),
-		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, aggregateDocs),
-		detail:    detail.New(th, km),
-		indexes:   indexes.New(th, km, fetchIndexes, createIndex, dropIndex),
-		statusbar: statusbar.New(th, client.URI()),
+		client:       client,
+		th:           th,
+		km:           km,
+		themeName:    themeName,
+		focus:        focusSidebar,
+		sidebar:  sidebar.New(th, km, fetchDBs, fetchCols),
+		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, aggregateDocs,
+			func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd {
+				return exportDocs(db, col, filter, sort, format, 0, "")
+			}),
+		detail:       detail.New(th, km),
+		indexes:      indexes.New(th, km, fetchIndexes, createIndex, dropIndex),
+		statusbar:    statusbar.New(th, client.URI()),
+		createColFn:  createColFn,
+		dropColFn:    dropColFn,
+		renameColFn:  renameColFn,
+		loadStatsFn:  loadStatsFn,
+		exportDocsFn: exportDocs,
 	}
 }
 
@@ -264,8 +376,218 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return &a, nil
 		}
 
+		// Collection management overlays (check before sidebar search)
+		if a.showColStats {
+			// Any key closes the stats overlay
+			a.showColStats = false
+			return &a, nil
+		}
+
+		if a.showCreateCol {
+			switch message.String() {
+			case "esc":
+				a.showCreateCol = false
+				a.createColInput.SetValue("")
+			case "enter":
+				col := strings.TrimSpace(a.createColInput.Value())
+				db := a.createColDB
+				a.showCreateCol = false
+				a.createColInput.SetValue("")
+				if col != "" {
+					return &a, a.createColFn(db, col)
+				}
+			default:
+				var tiCmd tea.Cmd
+				a.createColInput, tiCmd = a.createColInput.Update(message)
+				return &a, tiCmd
+			}
+			return &a, nil
+		}
+
+		if a.showCreateDB {
+			switch message.String() {
+			case "esc":
+				a.showCreateDB = false
+				a.createDBInput.SetValue("")
+			case "enter":
+				raw := strings.TrimSpace(a.createDBInput.Value())
+				a.showCreateDB = false
+				a.createDBInput.SetValue("")
+				if raw != "" {
+					var db, col string
+					if idx := strings.Index(raw, "/"); idx >= 0 {
+						db = strings.TrimSpace(raw[:idx])
+						col = strings.TrimSpace(raw[idx+1:])
+					} else {
+						db = raw
+						col = "default"
+					}
+					if db != "" && col != "" {
+						return &a, a.createColFn(db, col)
+					}
+				}
+			default:
+				var tiCmd tea.Cmd
+				a.createDBInput, tiCmd = a.createDBInput.Update(message)
+				return &a, tiCmd
+			}
+			return &a, nil
+		}
+
+		if a.showDropCol {
+			switch message.String() {
+			case "esc":
+				a.showDropCol = false
+				a.dropColInput.SetValue("")
+			case "enter":
+				typed := a.dropColInput.Value()
+				if typed == a.dropColTarget {
+					db, col := a.dropColDB, a.dropColTarget
+					a.showDropCol = false
+					a.dropColInput.SetValue("")
+					return &a, a.dropColFn(db, col)
+				}
+				var sbCmd tea.Cmd
+				a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+					Text:  "name mismatch — type the exact collection name",
+					IsErr: true,
+				})
+				return &a, sbCmd
+			default:
+				var tiCmd tea.Cmd
+				a.dropColInput, tiCmd = a.dropColInput.Update(message)
+				return &a, tiCmd
+			}
+			return &a, nil
+		}
+
+		if a.showRenameCol {
+			switch message.String() {
+			case "esc":
+				a.showRenameCol = false
+				a.renameColInput.SetValue("")
+			case "enter":
+				newName := strings.TrimSpace(a.renameColInput.Value())
+				db, old := a.renameColDB, a.renameColOld
+				a.showRenameCol = false
+				a.renameColInput.SetValue("")
+				if newName != "" && newName != old {
+					return &a, a.renameColFn(db, old, newName)
+				}
+			default:
+				var tiCmd tea.Cmd
+				a.renameColInput, tiCmd = a.renameColInput.Update(message)
+				return &a, tiCmd
+			}
+			return &a, nil
+		}
+
+		// Export picker — exportField: 0=format selector, 1=limit input, 2=dir input.
+		// Use message.Type for Tab so it works in all terminals.
+		if a.showExportPicker {
+			isTab := message.Type == tea.KeyTab
+			isEsc := message.Type == tea.KeyEsc || message.String() == "esc"
+			isEnter := message.Type == tea.KeyEnter
+
+			switch a.exportField {
+			case 1: // limit input active
+				if isEsc {
+					a.showExportPicker = false
+					a.exportField = 0
+					return &a, nil
+				}
+				if isTab {
+					a.exportLimitInput.Blur()
+					a.exportField = 2
+					return &a, a.exportDirInput.Focus()
+				}
+				if isEnter {
+					a.exportLimitInput.Blur()
+					a.exportField = 0
+					return &a, nil
+				}
+				var limCmd tea.Cmd
+				a.exportLimitInput, limCmd = a.exportLimitInput.Update(message)
+				return &a, limCmd
+
+			case 2: // dir input active
+				if isEsc {
+					a.showExportPicker = false
+					a.exportField = 0
+					return &a, nil
+				}
+				if isTab {
+					a.exportDirInput.Blur()
+					a.exportField = 0 // cycle back to format selector
+					return &a, nil
+				}
+				if isEnter {
+					a.exportDirInput.Blur()
+					a.exportField = 0
+					return &a, nil
+				}
+				var dirCmd tea.Cmd
+				a.exportDirInput, dirCmd = a.exportDirInput.Update(message)
+				return &a, dirCmd
+
+			default: // 0 — format selector
+				if isEsc || message.String() == "q" {
+					a.showExportPicker = false
+					return &a, nil
+				}
+				if isTab {
+					a.exportField = 1
+					return &a, a.exportLimitInput.Focus()
+				}
+				if isEnter {
+					a.showExportPicker = false
+					format := "json"
+					if a.exportPickerCursor == 1 {
+						format = "csv"
+					}
+					limit, _ := strconv.Atoi(strings.TrimSpace(a.exportLimitInput.Value()))
+					if limit < 0 {
+						limit = 0
+					}
+					outDir := strings.TrimSpace(a.exportDirInput.Value())
+					return &a, a.exportDocsFn(
+						a.documents.DB(), a.documents.ColName(),
+						a.documents.Filter(), a.documents.SortDoc(),
+						format, limit, outDir,
+					)
+				}
+				switch message.String() {
+				case "j", "down":
+					a.exportPickerCursor = (a.exportPickerCursor + 1) % 2
+				case "k", "up":
+					a.exportPickerCursor = (a.exportPickerCursor - 1 + 2) % 2
+				}
+				return &a, nil
+			}
+		}
+
 		// While the sidebar search is open, route all keys directly to it.
+		// Exception: if Enter is pressed with no results, close search and open
+		// a create-collection dialog pre-filled with the search query.
 		if a.focus == focusSidebar && a.sidebar.InSearchMode() {
+			if message.String() == "enter" {
+				query := strings.TrimSpace(a.sidebar.SearchValue())
+				if query != "" && a.sidebar.VisibleCount() == 0 {
+					db := a.sidebar.SearchDB()
+					a.sidebar, _ = a.sidebar.Update(tea.KeyMsg{Type: tea.KeyEsc}) // close search
+					if db != "" {
+						ti := textinput.New()
+						ti.Placeholder = "collection name"
+						ti.CharLimit = 128
+						ti.SetValue(query)
+						a.createColDB = db
+						a.createColInput = ti
+						a.showCreateCol = true
+						return &a, a.createColInput.Focus()
+					}
+					return &a, nil
+				}
+			}
 			var cmd tea.Cmd
 			a.sidebar, cmd = a.sidebar.Update(message)
 			return &a, cmd
@@ -388,18 +710,128 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return &a, tea.Batch(cmds...)
 		}
 
-		// D on a database in the sidebar → open drop confirmation overlay.
-		if message.String() == "D" && a.focus == focusSidebar && !a.sidebar.InSearchMode() {
-			if db := a.sidebar.ActiveDB(); db != "" {
+		// Collection management keys (sidebar focus, not in search mode)
+		if a.focus == focusSidebar && !a.sidebar.InSearchMode() {
+			switch message.String() {
+			case "n":
+				// Create new collection in the active DB (works on both DB and collection rows)
+				if db := a.sidebar.ActiveDB(); db != "" {
+					ti := textinput.New()
+					ti.Placeholder = "collection name"
+					ti.CharLimit = 128
+					a.createColDB = db
+					a.createColInput = ti
+					a.showCreateCol = true
+					return &a, a.createColInput.Focus()
+				}
+
+			case "N":
+				// Create new database (format: db/collection)
 				ti := textinput.New()
-				ti.Placeholder = db
-				ti.CharLimit = 128
-				a.dropDBTarget = db
-				a.dropInput = ti
-				a.showDropDB = true
-				return &a, a.dropInput.Focus()
+				ti.Placeholder = "db/collection"
+				ti.CharLimit = 256
+				a.createDBInput = ti
+				a.showCreateDB = true
+				return &a, a.createDBInput.Focus()
+
+			case "r":
+				// Rename collection (only when cursor is on a collection)
+				if a.sidebar.CursorIsCollection() {
+					db := a.sidebar.ActiveDB()
+					col := a.sidebar.ActiveCollection()
+					if db != "" && col != "" {
+						ti := textinput.New()
+						ti.Placeholder = col
+						ti.SetValue(col)
+						ti.CharLimit = 128
+						a.renameColDB = db
+						a.renameColOld = col
+						a.renameColInput = ti
+						a.showRenameCol = true
+						return &a, a.renameColInput.Focus()
+					}
+				}
+
+			case "s":
+				// Collection stats (only when cursor is on a collection)
+				if a.sidebar.CursorIsCollection() {
+					db := a.sidebar.ActiveDB()
+					col := a.sidebar.ActiveCollection()
+					if db != "" && col != "" {
+						a.colStatsDB = db
+						a.colStatsCol = col
+						a.colStatsData = nil
+						a.colStatsLoading = true
+						a.colStatsErr = nil
+						a.showColStats = true
+						return &a, a.loadStatsFn(db, col)
+					}
+				}
+
+			case "D":
+				if a.sidebar.CursorIsCollection() {
+					// Drop collection
+					db := a.sidebar.ActiveDB()
+					col := a.sidebar.ActiveCollection()
+					if db != "" && col != "" {
+						ti := textinput.New()
+						ti.Placeholder = col
+						ti.CharLimit = 128
+						a.dropColDB = db
+						a.dropColTarget = col
+						a.dropColInput = ti
+						a.showDropCol = true
+						return &a, a.dropColInput.Focus()
+					}
+				} else {
+					// Drop database (existing flow)
+					if db := a.sidebar.ActiveDB(); db != "" {
+						ti := textinput.New()
+						ti.Placeholder = db
+						ti.CharLimit = 128
+						a.dropDBTarget = db
+						a.dropInput = ti
+						a.showDropDB = true
+						return &a, a.dropInput.Focus()
+					}
+				}
+				return &a, nil
 			}
+		}
+
+		// D on a database in the sidebar → open drop confirmation overlay (legacy path, now handled above).
+		if message.String() == "D" && a.focus == focusSidebar && !a.sidebar.InSearchMode() {
+			// Already handled above; this block remains as a no-op fallthrough.
 			return &a, nil
+		}
+
+		// x/X when documents focused → show export format picker
+		if a.focus == focusDocuments && !a.documents.InInputMode() {
+			if message.String() == "x" || message.String() == "X" {
+				if a.documents.DB() != "" {
+					dl := downloadsDir()
+
+					lim := textinput.New()
+					lim.Placeholder = "0 = all docs"
+					lim.CharLimit = 12
+					lim.SetValue("0")
+
+					dir := textinput.New()
+					dir.Placeholder = dl
+					dir.CharLimit = 256
+					dir.SetValue(dl)
+
+					a.exportLimitInput = lim
+					a.exportDirInput = dir
+					a.exportField = 0
+					a.exportPickerCursor = 0
+					if message.String() == "X" {
+						a.exportPickerCursor = 1
+					}
+					a.showExportPicker = true
+					return &a, nil
+				}
+			}
 		}
 
 		// route to focused panel
@@ -604,6 +1036,87 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, sCmd, sbCmd)
 		}
 
+	case msg.CollectionCreated:
+		var sbCmd tea.Cmd
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  fmt.Sprintf("create collection failed: %v", message.Err),
+				IsErr: true,
+			})
+		} else {
+			var sCmd tea.Cmd
+			a.sidebar, sCmd = a.sidebar.Refresh()
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: fmt.Sprintf("collection %s.%s created", message.DB, message.Col),
+			})
+			cmds = append(cmds, sCmd)
+		}
+		cmds = append(cmds, sbCmd)
+
+	case msg.CollectionDropped:
+		var sbCmd tea.Cmd
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  fmt.Sprintf("drop collection failed: %v", message.Err),
+				IsErr: true,
+			})
+		} else {
+			var sCmd tea.Cmd
+			a.sidebar, sCmd = a.sidebar.Refresh()
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: fmt.Sprintf("collection %s.%s dropped", message.DB, message.Col),
+			})
+			cmds = append(cmds, sCmd)
+			// If documents panel is showing this collection, clear it
+			db, col := a.currentDBCol()
+			if db == message.DB && col == message.Col {
+				var docCmd tea.Cmd
+				a.documents, docCmd = a.documents.Update(msg.CollectionSelected{DB: "", Collection: ""})
+				cmds = append(cmds, docCmd)
+			}
+		}
+		cmds = append(cmds, sbCmd)
+
+	case msg.CollectionRenamed:
+		var sbCmd tea.Cmd
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  fmt.Sprintf("rename collection failed: %v", message.Err),
+				IsErr: true,
+			})
+		} else {
+			var sCmd tea.Cmd
+			a.sidebar, sCmd = a.sidebar.Refresh()
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: fmt.Sprintf("renamed %s.%s → %s", message.DB, message.OldCol, message.NewCol),
+			})
+			cmds = append(cmds, sCmd)
+		}
+		cmds = append(cmds, sbCmd)
+
+	case msg.CollectionStatsLoaded:
+		a.colStatsLoading = false
+		if message.Err != nil {
+			a.colStatsErr = message.Err
+		} else {
+			stats := message.Stats
+			a.colStatsData = &stats
+		}
+
+	case msg.ExportDone:
+		var sbCmd tea.Cmd
+		if message.Err != nil {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text:  "export failed: " + message.Err.Error(),
+				IsErr: true,
+			})
+		} else {
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: fmt.Sprintf("exported %d docs → %s", message.Count, message.Path),
+			})
+		}
+		cmds = append(cmds, sbCmd)
+
 	case msg.StatusUpdate:
 		var sbCmd tea.Cmd
 		a.statusbar, sbCmd = a.statusbar.Update(message)
@@ -620,6 +1133,36 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if a.showDropDB {
 			var tiCmd tea.Cmd
 			a.dropInput, tiCmd = a.dropInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
+		if a.showCreateCol {
+			var tiCmd tea.Cmd
+			a.createColInput, tiCmd = a.createColInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
+		if a.showCreateDB {
+			var tiCmd tea.Cmd
+			a.createDBInput, tiCmd = a.createDBInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
+		if a.showDropCol {
+			var tiCmd tea.Cmd
+			a.dropColInput, tiCmd = a.dropColInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
+		if a.showRenameCol {
+			var tiCmd tea.Cmd
+			a.renameColInput, tiCmd = a.renameColInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
+		if a.showExportPicker && a.exportField == 1 {
+			var tiCmd tea.Cmd
+			a.exportLimitInput, tiCmd = a.exportLimitInput.Update(message)
+			cmds = append(cmds, tiCmd)
+		}
+		if a.showExportPicker && a.exportField == 2 {
+			var tiCmd tea.Cmd
+			a.exportDirInput, tiCmd = a.exportDirInput.Update(message)
 			cmds = append(cmds, tiCmd)
 		}
 	}
@@ -662,6 +1205,28 @@ func (a App) View() string {
 		a.statusbar.SetWidth(a.width).View(),
 	)
 
+	if a.showExportPicker {
+		return renderExportPicker(base, a.width, a.height, a.th,
+			a.documents.DB(), a.documents.ColName(), a.documents.FilterExpr(),
+			a.exportPickerCursor, a.exportField,
+			a.exportLimitInput.View(),
+			a.exportDirInput.View(), a.exportDirInput.Value())
+	}
+	if a.showColStats {
+		return renderColStats(base, a.width, a.height, a.th, a.colStatsDB, a.colStatsCol, a.colStatsLoading, a.colStatsData, a.colStatsErr)
+	}
+	if a.showCreateCol {
+		return renderCreateCol(base, a.width, a.height, a.th, a.createColDB, a.createColInput.View())
+	}
+	if a.showCreateDB {
+		return renderCreateDB(base, a.width, a.height, a.th, a.createDBInput.View())
+	}
+	if a.showDropCol {
+		return renderDropCol(base, a.width, a.height, a.th, a.dropColDB, a.dropColTarget, a.dropColInput.View())
+	}
+	if a.showRenameCol {
+		return renderRenameCol(base, a.width, a.height, a.th, a.renameColDB, a.renameColOld, a.renameColInput.View())
+	}
 	if a.showHelp {
 		return renderHelp(base, a.width, a.height, a.th, a.themeName)
 	}
@@ -741,7 +1306,11 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 			{"enter", "expand db / select collection"},
 			{"/", "search  (esc to close)"},
 			{"db:col", "filter by db and collection"},
-			{"D", "drop database (type name to confirm)"},
+			{"n", "create collection (in current db)"},
+			{"N", "create database  (format: db/collection)"},
+			{"r", "rename collection"},
+			{"s", "collection stats"},
+			{"D", "drop db or collection (type name to confirm)"},
 			{"R", "refresh list"},
 		}},
 		{"Documents", [][2]string{
@@ -756,6 +1325,7 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 			{"a", "aggregate pipeline  ($EDITOR)"},
 			{"I", "toggle index panel"},
 			{"y / Y", "copy _id / full JSON"},
+			{"x / X", "export  (format picker → JSON or CSV, up to 10,000 docs)"},
 		}},
 		{"Index panel", [][2]string{
 			{"n / d", "create / drop index"},
@@ -969,6 +1539,333 @@ func renderThemePicker(base string, w, h int, th *style.Theme, current string, c
 		Render(strings.Join(rows, "\n"))
 
 	return centerOverlay(base, box, w, h)
+}
+
+// renderCreateCol overlays the create-collection dialog.
+func renderCreateCol(base string, w, h int, th *style.Theme, db, inputView string) string {
+	boxW := 44
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 30 {
+		boxW = 30
+	}
+
+	titleLine := th.PanelTitle.Width(boxW).Render("  NEW COLLECTION IN " + db)
+
+	var rows []string
+	rows = append(rows,
+		titleLine,
+		"",
+		th.DimText.Render("  Collection name:"),
+		"  "+inputView,
+		"",
+		th.DimText.Render("  enter create  esc cancel"),
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderCreateDB overlays the create-database dialog.
+func renderCreateDB(base string, w, h int, th *style.Theme, inputView string) string {
+	boxW := 44
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 30 {
+		boxW = 30
+	}
+
+	titleLine := th.PanelTitle.Width(boxW).Render("  NEW DATABASE  (format: db/collection)")
+
+	var rows []string
+	rows = append(rows,
+		titleLine,
+		"",
+		th.DimText.Render("  Enter db/collection (e.g. mydb/users):"),
+		"  "+inputView,
+		"",
+		th.DimText.Render("  enter create  esc cancel"),
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderDropCol overlays the drop-collection confirmation dialog.
+func renderDropCol(base string, w, h int, th *style.Theme, db, col, inputView string) string {
+	boxW := 54
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 34 {
+		boxW = 34
+	}
+
+	dangerTitle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(th.ErrText.GetForeground()).
+		Background(lipgloss.Color("#3b0000")).
+		Width(boxW).
+		Render("  ⚠  DROP COLLECTION")
+
+	dbColLabel := th.ErrText.Render("  " + db + "." + col)
+
+	var rows []string
+	rows = append(rows,
+		dangerTitle,
+		"",
+		th.DimText.Render("  This will permanently delete all data in:"),
+		dbColLabel,
+		"",
+		th.DimText.Render("  Type the collection name to confirm:"),
+		"  "+inputView,
+		"",
+		th.DimText.Render("  enter drop  esc cancel"),
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.ErrText.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderRenameCol overlays the rename-collection dialog.
+func renderRenameCol(base string, w, h int, th *style.Theme, db, col, inputView string) string {
+	boxW := 54
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 34 {
+		boxW = 34
+	}
+
+	amberTitle := lipgloss.NewStyle().
+		Bold(true).
+		Background(lipgloss.Color("#3d2a00")).
+		Foreground(lipgloss.Color("#fbbf24")).
+		Width(boxW).
+		Render("  RENAME COLLECTION")
+
+	var rows []string
+	rows = append(rows,
+		amberTitle,
+		"",
+		th.DimText.Render(fmt.Sprintf("  Renaming: %s.%s", db, col)),
+		"",
+		th.DimText.Render("  New collection name:"),
+		"  "+inputView,
+		"",
+		th.DimText.Render("  enter rename  esc cancel"),
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#fbbf24")).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderColStats overlays the collection stats panel.
+func renderColStats(base string, w, h int, th *style.Theme, db, col string, loading bool, data *msg.CollectionStatsDetail, err error) string {
+	boxW := 50
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 34 {
+		boxW = 34
+	}
+
+	titleLine := th.PanelTitle.Width(boxW).Render(fmt.Sprintf("  STATS  %s.%s", db, col))
+
+	var rows []string
+	rows = append(rows, titleLine, "")
+
+	if loading {
+		rows = append(rows, th.DimText.Render("  loading…"))
+	} else if err != nil {
+		rows = append(rows, th.ErrText.Render("  error: "+err.Error()))
+	} else if data != nil {
+		kw := 20
+		stat := func(label string, value string) string {
+			l := fmt.Sprintf("  %-*s", kw, label)
+			return th.HelpKey.Render(l) + "  " + th.HelpDesc.Render(value)
+		}
+		rows = append(rows,
+			stat("Documents:", fmt.Sprintf("%d", data.DocCount)),
+			stat("Avg doc size:", fmt.Sprintf("%.0f B", data.AvgDocSize)),
+			stat("Total size:", formatBytes(data.TotalSize)),
+			stat("Storage size:", formatBytes(data.StorageSize)),
+			stat("Indexes:", fmt.Sprintf("%d", data.IndexCount)),
+			stat("Index size:", formatBytes(data.IndexSize)),
+		)
+	} else {
+		rows = append(rows, th.DimText.Render("  no data available"))
+	}
+
+	rows = append(rows, "", th.DimText.Render("  press any key to close"))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// renderExportPicker overlays a format-selection, limit, and directory dialog for export.
+func renderExportPicker(base string, w, h int, th *style.Theme,
+	db, col, filterExpr string, cursor, exportField int,
+	limitView string,
+	dirView, dirRaw string,
+) string {
+	boxW := 58
+	if w < boxW+6 {
+		boxW = w - 6
+	}
+	if boxW < 38 {
+		boxW = 38
+	}
+
+	titleLine := th.PanelTitle.Width(boxW).Render(fmt.Sprintf("  EXPORT  %s.%s", db, col))
+
+	var filterLine string
+	if filterExpr != "" {
+		short := filterExpr
+		if len([]rune(short)) > 34 {
+			short = string([]rune(short)[:33]) + "…"
+		}
+		filterLine = th.StatusFilter.Render("  filter: " + short)
+	} else {
+		filterLine = th.DimText.Render("  filter: none")
+	}
+
+	type fmtOpt struct{ name, desc, ext string }
+	opts := []fmtOpt{
+		{"JSON", "pretty-printed Extended JSON", "json"},
+		{"CSV", "comma-separated values", "csv"},
+	}
+
+	var fmtRows []string
+	for i, f := range opts {
+		label := fmt.Sprintf("%-5s  %s", f.name, f.desc)
+		if i == cursor {
+			fmtRows = append(fmtRows, th.TableSelected.Width(boxW).Render("  ▶ "+label))
+		} else {
+			fmtRows = append(fmtRows, th.DimText.Render("    "+label))
+		}
+	}
+
+	var limitLabel string
+	if exportField == 1 {
+		limitLabel = th.StatusFilter.Render("  Limit  › ") + limitView
+	} else {
+		limitLabel = th.DimText.Render("  Limit:   ") + limitView + th.DimText.Render("  (0 = all)")
+	}
+
+	var dirLabel string
+	if exportField == 2 {
+		dirLabel = th.StatusFilter.Render("  Dir    › ") + dirView
+	} else {
+		dirLabel = th.DimText.Render("  Dir:     ") + dirView
+	}
+
+	// Live preview of the full output path.
+	outDir := resolveExportDir(dirRaw)
+	ext := opts[cursor].ext
+	preview := filepath.Join(outDir, col+"-[date]."+ext)
+	if len([]rune(preview)) > boxW-4 {
+		preview = "…" + preview[len(preview)-(boxW-5):]
+	}
+	previewLine := th.DimText.Render("  → " + preview)
+
+	hint := "  j/k format  tab switch  enter export  esc cancel"
+
+	var rows []string
+	rows = append(rows,
+		titleLine,
+		"",
+		filterLine,
+		"",
+		th.DimText.Render("  Format:"),
+	)
+	rows = append(rows, fmtRows...)
+	rows = append(rows,
+		"",
+		limitLabel,
+		dirLabel,
+		"",
+		previewLine,
+		"",
+		th.DimText.Render(hint),
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(th.HelpKey.GetForeground()).
+		Width(boxW).
+		Render(strings.Join(rows, "\n"))
+
+	return centerOverlay(base, box, w, h)
+}
+
+// formatBytes formats a byte count as a human-readable string.
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// downloadsDir returns ~/Downloads on every OS, falling back to home if it
+// doesn't exist (e.g. a headless Linux server with no Downloads folder).
+func downloadsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	dl := filepath.Join(home, "Downloads")
+	if info, err := os.Stat(dl); err == nil && info.IsDir() {
+		return dl
+	}
+	return home
+}
+
+// resolveExportDir expands ~ and returns an absolute directory path.
+// Falls back to Downloads (or home) if dir is empty.
+func resolveExportDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || dir == "~" {
+		return downloadsDir()
+	}
+	if strings.HasPrefix(dir, "~/") {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, dir[2:])
+	}
+	return dir
 }
 
 // currentDBCol extracts the current db and collection from documents panel.

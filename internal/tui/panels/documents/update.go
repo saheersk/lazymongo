@@ -318,6 +318,7 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 			_ = util.CopyToClipboard(raw)
 		}
 		return m, statusCmd("copied document JSON to clipboard")
+
 	}
 
 	return m, nil
