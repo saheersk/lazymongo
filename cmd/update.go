@@ -10,21 +10,9 @@ import (
 	"os"
 	"runtime"
 	"strings"
-
-	"github.com/spf13/cobra"
 )
 
-func init() {
-	rootCmd.AddCommand(updateCmd)
-}
-
-var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Update lazymongo to the latest release",
-	RunE:  runUpdate,
-}
-
-func runUpdate(_ *cobra.Command, _ []string) error {
+func runUpdate() error {
 	fmt.Println("Checking for updates…")
 
 	latest, err := fetchLatestVersion()

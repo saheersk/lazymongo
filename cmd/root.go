@@ -19,6 +19,7 @@ var (
 	flagProfile string
 	flagSave    string
 	flagTheme   string
+	flagUpdate  bool
 
 	buildVersion = "dev"
 	buildCommit  = "none"
@@ -62,10 +63,15 @@ func init() {
 	rootCmd.Flags().StringVar(&flagProfile, "profile", "", "Named connection profile from config")
 	rootCmd.Flags().StringVar(&flagSave, "save", "", "Save connection as named profile")
 	rootCmd.Flags().StringVar(&flagTheme, "theme", "", "Color theme (catppuccin, high-contrast, tokyo-night, nord, dracula)")
+	rootCmd.Flags().BoolVar(&flagUpdate, "update", false, "Update lazymongo to the latest release")
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", buildVersion, buildCommit, buildDate)
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
+	if flagUpdate {
+		return runUpdate()
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
