@@ -626,7 +626,7 @@ func (m Model) renderDropdownBox(items []string, selIdx, innerW int) []string {
 		if i == selIdx {
 			rendered = selItem.Render(c)
 		} else {
-			rendered = itemBase.Copy().Foreground(fgNormal).Render(c)
+			rendered = itemBase.Foreground(fgNormal).Render(c)
 		}
 		itemLines = append(itemLines, " "+rendered+" ")
 	}
