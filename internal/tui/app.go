@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	xansi "github.com/charmbracelet/x/ansi"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/saheersk/lazymongo/internal/mongo"
 	"github.com/saheersk/lazymongo/internal/tui/keymap"
 	"github.com/saheersk/lazymongo/internal/tui/msg"
@@ -30,7 +31,7 @@ import (
 type focusedPanel int
 
 const (
-	focusSidebar   focusedPanel = iota
+	focusSidebar focusedPanel = iota
 	focusDocuments
 	focusDetail
 	focusIndexes
@@ -72,6 +73,7 @@ const docsWithDetail = 38
 // themeList is the ordered set of available themes shown in the picker.
 var themeList = []string{
 	"catppuccin",
+	"catppuccin-latte",
 	"high-contrast",
 	"tokyo-night",
 	"nord",
@@ -86,8 +88,8 @@ type App struct {
 	showDetail    bool
 	showIndexes   bool
 	showHelp      bool
-	showTheme     bool // theme-picker overlay
-	themeCursor   int  // cursor inside theme picker
+	showTheme     bool            // theme-picker overlay
+	themeCursor   int             // cursor inside theme picker
 	showDropDB    bool            // drop-database confirmation overlay
 	dropDBTarget  string          // database name being confirmed
 	dropInput     textinput.Model // typed confirmation input
@@ -136,11 +138,11 @@ type App struct {
 	schemaScroll  int
 
 	// Import overlay
-	showImport         bool
-	importInput        textinput.Model
-	importLoading      bool
-	importErr          error
-	importCompletions  []string // tab-completion candidates
+	showImport        bool
+	importInput       textinput.Model
+	importLoading     bool
+	importErr         error
+	importCompletions []string // tab-completion candidates
 
 	sidebar   sidebar.Model
 	documents documents.Model
@@ -265,9 +267,9 @@ func New(client *mongo.Client, themeName, editor string, keybindOverrides map[st
 		}
 	}
 
-	createIndex := func(db, col string, keys bson.D, unique, sparse bool) tea.Cmd {
+	createIndex := func(db, col string, keys bson.D, unique, sparse bool, ttlSeconds int32) tea.Cmd {
 		return func() tea.Msg {
-			name, err := client.CreateIndex(db, col, keys, unique, sparse)
+			name, err := client.CreateIndex(db, col, keys, unique, sparse, ttlSeconds)
 			return msg.IndexCreated{Name: name, Err: err}
 		}
 	}
@@ -338,12 +340,12 @@ func New(client *mongo.Client, themeName, editor string, keybindOverrides map[st
 	}
 
 	return &App{
-		client:       client,
-		th:           th,
-		km:           km,
-		themeName:    themeName,
-		focus:        focusSidebar,
-		sidebar:  sidebar.New(th, km, fetchDBs, fetchCols),
+		client:    client,
+		th:        th,
+		km:        km,
+		themeName: themeName,
+		focus:     focusSidebar,
+		sidebar:   sidebar.New(th, km, fetchDBs, fetchCols),
 		documents: documents.New(th, km, fetchPage, insertDoc, replaceDoc, deleteDoc, bulkDeleteDoc, aggregateDocs,
 			func(db, col string, filter bson.M, sort bson.D, format string) tea.Cmd {
 				return exportDocs(db, col, filter, sort, format, 0, "")
@@ -549,11 +551,18 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Explain plan overlay
 		if a.showExplain && !a.explainLoading {
-			switch message.String() {
-			// j/k scroll is not needed — explain is a fixed small card
-			default:
+			// n on a COLLSCAN result → open the index editor pre-filled with
+			// the fields of the active filter, closing the warning loop in
+			// one keystroke.
+			if message.String() == "n" &&
+				a.explainStats != nil && a.explainStats.Err == nil && a.explainStats.IndexUsed == "" {
 				a.showExplain = false
+				fields := topLevelFilterFields(a.documents.Filter())
+				var cmd tea.Cmd
+				a.indexes, cmd = a.indexes.OpenCreateWithKeys(a.explainStats.DB, a.explainStats.Col, fields)
+				return &a, cmd
 			}
+			a.showExplain = false
 			return &a, nil
 		}
 
@@ -1175,6 +1184,15 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		// x/X when documents focused → show export format picker
 		if a.focus == focusDocuments && !a.documents.InInputMode() {
 			if message.String() == "x" || message.String() == "X" {
+				// Export reads the live collection with the active filter — in
+				// agg mode that's not what's on screen, so refuse with context.
+				if a.documents.InAggMode() {
+					var sbCmd tea.Cmd
+					a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+						Text: "export works on the live collection — esc to exit aggregate mode first",
+					})
+					return &a, sbCmd
+				}
 				if a.documents.DB() != "" {
 					dl := downloadsDir()
 
@@ -1244,6 +1262,7 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		a.showIndexes = false
 		a.focus = focusDocuments
 		a = a.syncFocus()
+		a.detail = a.detail.SetFilterExpr("")
 		var docCmd, sbCmd, dtCmd tea.Cmd
 		a.documents, docCmd = a.documents.Update(message)
 		a.statusbar, sbCmd = a.statusbar.Update(message)
@@ -1277,7 +1296,41 @@ func (a App) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		var docCmd, sbCmd tea.Cmd
 		a.documents, docCmd = a.documents.Update(message)
 		a.statusbar, sbCmd = a.statusbar.Update(message)
+		a.detail = a.detail.SetFilterExpr(message.Expr)
 		cmds = append(cmds, docCmd, sbCmd)
+
+	// ── open filter bar (requested from detail panel or elsewhere) ────────────
+	case msg.OpenFilter:
+		// Same guard as '/' inside the documents panel: filters don't apply
+		// to aggregate results.
+		if a.documents.InAggMode() {
+			var sbCmd tea.Cmd
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: "filter doesn't apply to aggregate results — esc to exit aggregate mode first",
+			})
+			cmds = append(cmds, sbCmd)
+			break
+		}
+		a.focus = focusDocuments
+		var fCmd tea.Cmd
+		a.documents, fCmd = a.documents.BeginFilter()
+		cmds = append(cmds, fCmd)
+
+	// ── edit doc requested from detail panel ──────────────────────────────────
+	case msg.EditDocRequested:
+		// Aggregate results can carry synthetic _ids ($group output) — editing
+		// them would replace the wrong document in the live collection.
+		if a.documents.InAggMode() {
+			var sbCmd tea.Cmd
+			a.statusbar, sbCmd = a.statusbar.Update(msg.StatusUpdate{
+				Text: "editing is not available on aggregate results — esc to exit aggregate mode first",
+			})
+			cmds = append(cmds, sbCmd)
+			break
+		}
+		var eCmd tea.Cmd
+		a.documents, eCmd = a.documents.EditDoc(message.Doc)
+		cmds = append(cmds, eCmd)
 
 	// ── pipeline ready: editor closed, fire the DB query ──────────────────────
 	case msg.PipelineReady:
@@ -1643,7 +1696,18 @@ func (a App) View() string {
 	if a.width == 0 || a.height == 0 {
 		return "initialising…"
 	}
+	out := a.viewMain()
 
+	// Transient status messages render as a floating toast in the top-right
+	// corner, above whatever is currently on screen.
+	if text, isErr := a.statusbar.Flash(); text != "" {
+		out = overlayToast(out, text, isErr, a.width, a.height, a.th)
+	}
+	return out
+}
+
+// viewMain renders the panel layout plus any modal overlay.
+func (a App) viewMain() string {
 	sw, dw, rightW := a.panelWidths()
 	mainH := a.height - 1 // 1 row for status bar
 
@@ -1805,14 +1869,14 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 			{"n / e / d", "new / edit / delete doc"},
 			{"c", "clone doc (edit copy with new _id)"},
 			{"space", "toggle select  ·  D  bulk delete selected"},
-			{"/", "filter  (MongoDB query JSON  ·  ↑/↓ history)"},
+			{"/", "filter  (MongoDB query JSON  ·  ↑/↓ history  ·  tab completes fields + $ops)"},
 			{"s", "sort  (field / -field / {…})"},
 			{"r", "reset filter and sort"},
-			{"a", "aggregate pipeline  ($EDITOR)"},
+			{"a", "aggregate pipeline  ($EDITOR  ·  picker of recent pipelines)"},
 			{"I", "toggle index panel"},
 			{"y / Y", "copy _id / full JSON"},
 			{"x / X", "export  (JSON or CSV, with filter + limit)"},
-			{"E", "explain query plan  (index usage + timing)"},
+			{"E", "explain query plan  (n on COLLSCAN → create index)"},
 			{"S", "schema inference  (sample 100 docs, field types)"},
 			{"i", "import documents  (json / jsonl / csv)"},
 			{"W", "watch collection  (live change stream)"},
@@ -1880,11 +1944,12 @@ func buildHelpBox(w, h int, th *style.Theme, themeName string) string {
 
 // themeDisplayNames are the human-readable labels shown in the picker.
 var themeDisplayNames = map[string]string{
-	"catppuccin":    "Catppuccin   lavender / mocha",
-	"high-contrast": "High Contrast  green / amber",
-	"tokyo-night":   "Tokyo Night  blue / purple",
-	"nord":          "Nord         arctic blues",
-	"dracula":       "Dracula      purple / pink",
+	"catppuccin":       "Catppuccin   lavender / mocha",
+	"catppuccin-latte": "Latte        light / day",
+	"high-contrast":    "High Contrast  green / amber",
+	"tokyo-night":      "Tokyo Night  blue / purple",
+	"nord":             "Nord         arctic blues",
+	"dracula":          "Dracula      purple / pink",
 }
 
 // renderDropDB overlays the drop-database confirmation dialog.
@@ -1927,6 +1992,76 @@ func renderDropDB(base string, w, h int, th *style.Theme, dbName, inputView stri
 		Render(strings.Join(rows, "\n"))
 
 	return centerOverlay(base, box, w, h)
+}
+
+// topLevelFilterFields extracts the indexable top-level field names from a
+// query filter, sorted ascending. Operator keys ($or, $and, …) and _id are
+// skipped — _id always has an index.
+func topLevelFilterFields(filter bson.M) []string {
+	var fields []string
+	for k := range filter {
+		if k == "_id" || strings.HasPrefix(k, "$") {
+			continue
+		}
+		fields = append(fields, k)
+	}
+	sort.Strings(fields)
+	return fields
+}
+
+// overlayToast composites a small notification box into the top-right corner
+// of the rendered view without dimming the background.
+func overlayToast(base, text string, isErr bool, w, h int, th *style.Theme) string {
+	icon := "✓"
+	borderFg := th.StatusConn.GetForeground()
+	textStyle := lipgloss.NewStyle().Foreground(th.TableRow.GetForeground())
+	if isErr {
+		icon = "✗"
+		borderFg = th.ErrText.GetForeground()
+		textStyle = th.ErrText
+	}
+
+	maxW := w - 6
+	if maxW > 48 {
+		maxW = 48
+	}
+	if maxW < 12 {
+		return base // terminal too narrow for a toast
+	}
+
+	body := lipgloss.NewStyle().Width(maxW - 4).Render(textStyle.Render(icon + " " + text))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderFg).
+		Padding(0, 1).
+		Render(body)
+
+	boxLines := strings.Split(box, "\n")
+	bw := lipgloss.Width(boxLines[0])
+	startX := w - bw - 2
+	if startX < 0 {
+		startX = 0
+	}
+	const startY = 1
+
+	baseLines := strings.Split(base, "\n")
+	for len(baseLines) < h {
+		baseLines = append(baseLines, "")
+	}
+	for i, bl := range boxLines {
+		y := startY + i
+		if y >= len(baseLines) {
+			break
+		}
+		plain := baseLines[y]
+		left := xansi.Truncate(plain, startX, "")
+		if lw := lipgloss.Width(left); lw < startX {
+			left += strings.Repeat(" ", startX-lw)
+		}
+		right := xansi.TruncateLeft(plain, startX+bw, "")
+		baseLines[y] = left + bl + right
+	}
+	return strings.Join(baseLines, "\n")
 }
 
 // centerOverlay composites a rendered box string centred over the dimmed base.
@@ -2422,7 +2557,9 @@ func renderExplain(base string, w, h int, th *style.Theme, loading bool, stats *
 		)
 		// Efficiency advisory
 		if stats.IndexUsed == "" && stats.DocsExamined > 0 {
-			rows = append(rows, "", th.ErrText.Render("  ⚠ full collection scan — consider adding an index"))
+			rows = append(rows, "",
+				th.ErrText.Render("  ⚠ full collection scan — consider adding an index"),
+				th.HelpKey.Render("  n")+th.HelpDesc.Render(" create an index from this filter"))
 		} else if stats.DocsExamined > 0 && stats.NReturned > 0 {
 			ratio := float64(stats.DocsExamined) / float64(stats.NReturned)
 			if ratio > 10 {

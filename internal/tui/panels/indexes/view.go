@@ -54,7 +54,9 @@ func (m Model) renderInner() string {
 	if len(m.indexes) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left,
 			header, "",
-			m.th.DimText.Render("  no indexes"),
+			m.th.DimText.Render("  no indexes — ")+
+				m.th.HelpKey.Render("n")+
+				m.th.DimText.Render(" create one"),
 		)
 	}
 

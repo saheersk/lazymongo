@@ -33,7 +33,7 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		if message.Err != nil {
 			return m, statusCmd("index error: " + message.Err.Error())
 		}
-		return m, m.createIndex(m.db, m.collection, message.Keys, message.Unique, message.Sparse)
+		return m, m.createIndex(m.db, m.collection, message.Keys, message.Unique, message.Sparse, message.TTLSeconds)
 
 	case msg.IndexCreated:
 		if message.Err != nil {
@@ -127,11 +127,43 @@ func (m Model) handleDropConfirm(key tea.KeyMsg) (Model, tea.Cmd) {
 const indexTemplate = `{
   "keys": { "fieldName": 1 },
   "unique": false,
-  "sparse": false
+  "sparse": false,
+  "ttlSeconds": -1
 }`
 
+// indexTemplateFor builds an editor template whose keys are pre-filled with
+// the given field names (ascending). Empty fields fall back to the default.
+func indexTemplateFor(fields []string) string {
+	if len(fields) == 0 {
+		return indexTemplate
+	}
+	pairs := make([]string, len(fields))
+	for i, f := range fields {
+		pairs[i] = fmt.Sprintf("%q: 1", f)
+	}
+	return fmt.Sprintf(`{
+  "keys": { %s },
+  "unique": false,
+  "sparse": false,
+  "ttlSeconds": -1
+}`, strings.Join(pairs, ", "))
+}
+
 func (m Model) openCreateEditor() (Model, tea.Cmd) {
-	ec, err := buildIndexEditorCmd(indexTemplate, m.editor)
+	return m.openEditorWithContent(indexTemplate)
+}
+
+// OpenCreateWithKeys opens the index editor pre-filled with the given field
+// names. The explain overlay uses this to turn a COLLSCAN warning into a
+// one-keystroke index creation for the active filter.
+func (m Model) OpenCreateWithKeys(db, col string, fields []string) (Model, tea.Cmd) {
+	m.db = db
+	m.collection = col
+	return m.openEditorWithContent(indexTemplateFor(fields))
+}
+
+func (m Model) openEditorWithContent(content string) (Model, tea.Cmd) {
+	ec, err := buildIndexEditorCmd(content, m.editor)
 	if err != nil {
 		return m, statusCmd("error: " + err.Error())
 	}
@@ -181,11 +213,14 @@ func readIndexFile(path string) msg.IndexEditorDone {
 		return msg.IndexEditorDone{Err: fmt.Errorf("empty file — no changes")}
 	}
 
-	// Parse {"keys":{...},"unique":bool,"sparse":bool}
+	// Parse {"keys":{...},"unique":bool,"sparse":bool,"ttlSeconds":int}
+	// TTLSeconds is a pointer so an omitted field (nil) is distinguishable
+	// from an explicit 0 (expire immediately); nil and negatives mean no TTL.
 	var raw struct {
-		Keys   bson.M `bson:"keys"   json:"keys"`
-		Unique bool   `bson:"unique" json:"unique"`
-		Sparse bool   `bson:"sparse" json:"sparse"`
+		Keys       bson.M `bson:"keys"       json:"keys"`
+		Unique     bool   `bson:"unique"     json:"unique"`
+		Sparse     bool   `bson:"sparse"     json:"sparse"`
+		TTLSeconds *int32 `bson:"ttlSeconds" json:"ttlSeconds"`
 	}
 	if err := bson.UnmarshalExtJSON(data, false, &raw); err != nil {
 		return msg.IndexEditorDone{Err: fmt.Errorf("invalid JSON: %w", err)}
@@ -194,11 +229,16 @@ func readIndexFile(path string) msg.IndexEditorDone {
 		return msg.IndexEditorDone{Err: fmt.Errorf(`"keys" must not be empty`)}
 	}
 
+	ttl := int32(-1)
+	if raw.TTLSeconds != nil && *raw.TTLSeconds >= 0 {
+		ttl = *raw.TTLSeconds
+	}
+
 	var keys bson.D
 	for k, v := range raw.Keys {
 		keys = append(keys, bson.E{Key: k, Value: v})
 	}
-	return msg.IndexEditorDone{Keys: keys, Unique: raw.Unique, Sparse: raw.Sparse}
+	return msg.IndexEditorDone{Keys: keys, Unique: raw.Unique, Sparse: raw.Sparse, TTLSeconds: ttl}
 }
 
 func statusCmd(text string) tea.Cmd {

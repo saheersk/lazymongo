@@ -26,11 +26,12 @@ A fast, keyboard-driven terminal UI for MongoDB — inspired by lazygit and lazy
 
 ### Querying
 - **Filter** with any MongoDB query expression — `{"status":"active","age":{"$gt":18}}` (`/`)
+- **Filter autocomplete** — `Tab` completes field names *and* `$` query operators (`$gt`, `$in`, `$regex`, …)
 - **Filter history** — `↑`/`↓` in the filter bar to recall previous filters
 - **Sort** by field name, `-field` for descending, or a full sort doc — `{"field":-1}` (`s`)
 - **Reset** filter + sort in one keystroke (`r`)
-- **Aggregate** — open a pipeline editor, run it, see results tagged `[AGG]` (`a`)
-- **Explain plan** — see COLLSCAN/IXSCAN, index used, docs/keys examined, execution time (`E`)
+- **Aggregate** — open a pipeline editor, run it, see results tagged `[AGG]`; recent pipelines offered in a picker (`a`)
+- **Explain plan** — see COLLSCAN/IXSCAN, index used, docs/keys examined, execution time; press `n` on a COLLSCAN to create the missing index pre-filled from your filter (`E`)
 
 ### Schema & data tools
 - **Schema inference** — samples up to 100 docs and shows per-field type breakdown with presence % (`S`)
@@ -54,7 +55,10 @@ A fast, keyboard-driven terminal UI for MongoDB — inspired by lazygit and lazy
 - **Connection switch** — press `P` to pick any saved profile without restarting (`P`)
 
 ### UI & themes
-- **5 built-in themes** — `catppuccin`, `high-contrast`, `tokyo-night`, `nord`, `dracula`; cycle with `T`
+- **6 built-in themes** — `catppuccin`, `catppuccin-latte` (light), `high-contrast`, `tokyo-night`, `nord`, `dracula`; cycle with `T`
+- **Nerd Font icons** — database/collection/document glyphs in panel titles and the sidebar (disable with `ui.nerdFonts: false` for unpatched fonts)
+- **Toast notifications** — copy/export/save confirmations pop up in the top-right corner
+- **Typed table cells** — numbers, booleans, ObjectIds, dates, and null are colour-coded in the document table
 - **Help overlay** — `?` shows a full keybinding reference at any time
 
 ---
@@ -185,9 +189,10 @@ connections:
     theme: catppuccin   # per-profile theme override
 
 ui:
-  theme: catppuccin     # catppuccin | high-contrast | tokyo-night | nord | dracula
+  theme: catppuccin     # catppuccin | catppuccin-latte | high-contrast | tokyo-night | nord | dracula
   mouse: true
   pageSize: 50
+  nerdFonts: true       # set false if your terminal font has no Nerd Font glyphs
   editor: ""            # leave empty to use $EDITOR / $VISUAL / vim
 ```
 
@@ -221,7 +226,7 @@ connections:
     theme: catppuccin
 ```
 
-Available themes: `catppuccin` · `high-contrast` · `tokyo-night` · `nord` · `dracula`
+Available themes: `catppuccin` · `catppuccin-latte` (light) · `high-contrast` · `tokyo-night` · `nord` · `dracula`
 
 ---
 
@@ -288,13 +293,16 @@ Available themes: `catppuccin` · `high-contrast` · `tokyo-night` · `nord` · 
 | Key | Action |
 |-----|--------|
 | `Enter` | Apply |
-| `Esc` | Cancel |
+| `Esc` | Cancel (closes the completion dropdown first if open) |
 | `Ctrl+U` | Clear input |
-| `↑` / `↓` | Browse filter history |
+| `Tab` | Autocomplete field names / `$` operators (cycle matches) |
+| `↑` / `↓` | Browse filter history (or dropdown when open) |
 
 ### Aggregate mode
 
-Press `a` to open your `$EDITOR` with a pipeline template:
+Press `a` to open your `$EDITOR` with a pipeline template. If you've run
+pipelines before, a picker appears first with your 10 most recent pipelines
+(`↑`/`↓` select, `Enter` edit, `Esc` cancel):
 
 ```json
 [
@@ -308,6 +316,9 @@ Save and close to run. Results appear tagged `[AGG]`.
 |-----|--------|
 | `a` | Re-open editor (last pipeline pre-filled) |
 | `esc` | Exit aggregate mode, return to live view |
+
+While viewing `[AGG]` results, filter/sort/edit/export keys show a reminder
+that they operate on the live collection — exit agg mode first.
 
 Pipelines without `$limit`, `$out`, or `$merge` automatically get `{"$limit": 1000}` appended.
 
@@ -328,21 +339,24 @@ Index creation template:
 {
   "keys": { "fieldName": 1 },
   "unique": false,
-  "sparse": false
+  "sparse": false,
+  "ttlSeconds": -1
 }
 ```
 
 Use `1` / `-1` for ascending/descending, `"text"` for full-text indexes.
+Set `ttlSeconds` to a value ≥ 0 to create a TTL index (`-1` disables it).
 
 ### Explain plan overlay (`E`)
 
 Shows the winning plan for the current query:
 
 - **IXSCAN** — index name, keys examined, selectivity
-- **COLLSCAN** — warning for missing index
+- **COLLSCAN** — warning for missing index, plus `n` to open the index editor
+  pre-filled with the fields of your current filter
 - Execution time and docs returned
 
-Press any key to close.
+Press `n` to create the suggested index, any other key to close.
 
 ### Schema overlay (`S`)
 
@@ -492,7 +506,7 @@ Tests use the `lazymongo_test` database and clean up after themselves.
 │       ├── app.go       # root bubbletea model, message routing, overlays
 │       ├── msg/         # shared message types (no import cycles)
 │       ├── keymap/      # all key bindings
-│       ├── style/       # lipgloss themes (5 built-in)
+│       ├── style/       # lipgloss themes (6 built-in)
 │       └── panels/
 │           ├── sidebar/    # database + collection tree, search, create/drop
 │           ├── documents/  # paginated table, filter/sort/agg/multi-select

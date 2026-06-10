@@ -14,7 +14,8 @@ import (
 type FetchIndexesFn func(db, col string) tea.Cmd
 
 // CreateIndexFn creates a new index and returns an IndexCreated message.
-type CreateIndexFn func(db, col string, keys bson.D, unique, sparse bool) tea.Cmd
+// ttlSeconds < 0 means no TTL.
+type CreateIndexFn func(db, col string, keys bson.D, unique, sparse bool, ttlSeconds int32) tea.Cmd
 
 // DropIndexFn drops a named index and returns an IndexDropped message.
 type DropIndexFn func(db, col, name string) tea.Cmd

@@ -65,7 +65,8 @@ func (c *Client) ListIndexesAndStats(dbName, colName string) ([]msg.IndexInfo, m
 }
 
 // CreateIndex creates an index on colName with the given key document.
-func (c *Client) CreateIndex(dbName, colName string, keys bson.D, unique, sparse bool) (string, error) {
+// ttlSeconds >= 0 creates a TTL index (expireAfterSeconds).
+func (c *Client) CreateIndex(dbName, colName string, keys bson.D, unique, sparse bool, ttlSeconds int32) (string, error) {
 	ctx, cancel := opCtx()
 	defer cancel()
 
@@ -77,6 +78,9 @@ func (c *Client) CreateIndex(dbName, colName string, keys bson.D, unique, sparse
 	}
 	if sparse {
 		idxOpts.SetSparse(true)
+	}
+	if ttlSeconds >= 0 {
+		idxOpts.SetExpireAfterSeconds(ttlSeconds)
 	}
 
 	model := driver.IndexModel{Keys: keys, Options: idxOpts}

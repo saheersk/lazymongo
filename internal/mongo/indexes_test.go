@@ -52,7 +52,7 @@ func TestCreateIndex_PlainIndex(t *testing.T) {
 	setupIdxCol(t)
 
 	name, err := mongoClient.CreateIndex(crudTestDB, idxTestCol,
-		bson.D{{Key: "email", Value: 1}}, false, false)
+		bson.D{{Key: "email", Value: 1}}, false, false, -1)
 	if err != nil {
 		t.Fatalf("CreateIndex error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCreateIndex_UniqueFlag(t *testing.T) {
 	setupIdxCol(t)
 
 	name, err := mongoClient.CreateIndex(crudTestDB, idxTestCol,
-		bson.D{{Key: "username", Value: 1}}, true, false)
+		bson.D{{Key: "username", Value: 1}}, true, false, -1)
 	if err != nil {
 		t.Fatalf("CreateIndex unique error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestCreateIndex_SparseFlag(t *testing.T) {
 	setupIdxCol(t)
 
 	name, err := mongoClient.CreateIndex(crudTestDB, idxTestCol,
-		bson.D{{Key: "phone", Value: 1}}, false, true)
+		bson.D{{Key: "phone", Value: 1}}, false, true, -1)
 	if err != nil {
 		t.Fatalf("CreateIndex sparse error: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestCreateIndex_CompoundIndex(t *testing.T) {
 
 	name, err := mongoClient.CreateIndex(crudTestDB, idxTestCol,
 		bson.D{{Key: "lastName", Value: 1}, {Key: "firstName", Value: 1}},
-		false, false)
+		false, false, -1)
 	if err != nil {
 		t.Fatalf("CreateIndex compound error: %v", err)
 	}
@@ -151,13 +151,38 @@ func TestCreateIndex_CompoundIndex(t *testing.T) {
 	t.Errorf("index %q not found", name)
 }
 
+// TestCreateIndex_TTL verifies a TTL index reports its expireAfterSeconds.
+func TestCreateIndex_TTL(t *testing.T) {
+	setupIdxCol(t)
+
+	name, err := mongoClient.CreateIndex(crudTestDB, idxTestCol,
+		bson.D{{Key: "createdAt", Value: 1}}, false, false, 3600)
+	if err != nil {
+		t.Fatalf("CreateIndex TTL error: %v", err)
+	}
+
+	idxs, _, err := mongoClient.ListIndexesAndStats(crudTestDB, idxTestCol)
+	if err != nil {
+		t.Fatalf("ListIndexesAndStats error: %v", err)
+	}
+	for _, idx := range idxs {
+		if idx.Name == name {
+			if idx.TTLSeconds != 3600 {
+				t.Errorf("TTLSeconds = %d; want 3600", idx.TTLSeconds)
+			}
+			return
+		}
+	}
+	t.Errorf("index %q not found", name)
+}
+
 // TestDropIndex_IndexDisappears creates an index, drops it, and verifies
 // it is gone from ListIndexesAndStats.
 func TestDropIndex_IndexDisappears(t *testing.T) {
 	setupIdxCol(t)
 
 	name, err := mongoClient.CreateIndex(crudTestDB, idxTestCol,
-		bson.D{{Key: "toDelete", Value: 1}}, false, false)
+		bson.D{{Key: "toDelete", Value: 1}}, false, false, -1)
 	if err != nil {
 		t.Fatalf("CreateIndex error: %v", err)
 	}
@@ -196,7 +221,7 @@ func TestListIndexesAndStats_IndexCountMatchesCreated(t *testing.T) {
 	fields := []string{"alpha", "beta", "gamma"}
 	for _, f := range fields {
 		if _, err := mongoClient.CreateIndex(crudTestDB, idxTestCol,
-			bson.D{{Key: f, Value: 1}}, false, false); err != nil {
+			bson.D{{Key: f, Value: 1}}, false, false, -1); err != nil {
 			t.Fatalf("CreateIndex %q: %v", f, err)
 		}
 	}
