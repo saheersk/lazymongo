@@ -4,6 +4,32 @@ All notable changes to lazymongo are documented here.
 
 ---
 
+## [1.3.0] — 2026-06-09
+
+### Added
+- **Explain → index creation** — press `n` on a COLLSCAN result in the explain overlay (`E`) to open the index editor pre-filled with the fields of your active filter; one keystroke from warning to fix
+- **Operator autocomplete** — `Tab` in the filter bar now completes MongoDB query operators (`$gt`, `$in`, `$regex`, `$exists`, …) in addition to field names
+- **Pipeline history** — your 10 most recent aggregate pipelines are remembered; pressing `a` shows a picker (`✚ new pipeline` + recents) so past pipelines are never lost
+- **TTL indexes** — index creation template gained `ttlSeconds`; set it ≥ 0 to create a TTL index (`expireAfterSeconds`)
+- **Relaxed JSON filters** — Compass-style filters now parse: unquoted keys (`{status: "active"}`) and single quotes (`{name: 'jo'}`)
+- **Filter completion dropdown** — completions appear in a floating dropdown above the filter bar, navigable with `Tab` / `↑` / `↓`
+- **Detail panel actions** — `e` opens the displayed document in `$EDITOR`; `/` jumps back to edit the active filter; header shows the filter badge
+- **Toast notifications** — copy / export / index confirmations and errors pop up in the top-right corner instead of replacing the status bar
+- **Nerd Font icons** — database / collection / document glyphs in the sidebar and panel titles; disable with `ui.nerdFonts: false` for unpatched fonts
+- **Catppuccin Latte** — first light theme (`catppuccin-latte`), bringing the built-in theme count to 6
+- **Typed table cells** — numbers, booleans, ObjectIds, dates, and null are colour-coded in the document table
+- **Loading skeletons** — dim placeholder bars while a page loads instead of a blank panel
+- **Detail panel scrollbar** — proportional track + thumb on the right edge of the JSON viewer
+- **Empty-state hints** — empty collections suggest `n new · i import`; zero-match filters suggest `r clear · / edit`
+
+### Changed
+- Aggregate mode now explains itself: filter / sort / edit / export keys show why they're unavailable on `[AGG]` results instead of silently doing nothing (also guards the detail-panel shortcuts, where editing a `$group` result could have replaced the wrong live document)
+- Compact `_id` column (10 chars) — other fields stay readable in narrow layouts; columns that don't fit are hidden instead of mangled
+- Bottom bar is always exactly two lines (pager + hints) with progressive hint fill — no more wrapping in narrow panels
+- Index panel empty state now hints `n create one`
+
+---
+
 ## [1.2.5] — 2026-06-07
 
 ### Added
