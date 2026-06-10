@@ -1,16 +1,15 @@
 package sidebar
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/saheersk/lazymongo/internal/tui/style"
 )
 
 const (
 	arrowRight = "▸"
 	arrowDown  = "▾"
-	bullet     = "●"
 	indent     = "  "
 )
 
@@ -154,7 +153,7 @@ func (m Model) renderVisibleItem(idx int, visible []treeItem) string {
 		if it.expanded {
 			arrow = arrowDown
 		}
-		label := fmt.Sprintf("  %s %s", arrow, it.name)
+		label := "  " + arrow + " " + iconPrefix(style.Icons.Database) + it.name
 		label = truncate(label, innerW)
 		if isCursor {
 			return m.th.CursorItem.Width(innerW).Render(label)
@@ -162,7 +161,7 @@ func (m Model) renderVisibleItem(idx int, visible []treeItem) string {
 		return m.th.DatabaseItem.Render(label)
 
 	case kindCollection:
-		label := "    " + bullet + " " + it.name
+		label := "    " + iconPrefix(style.Icons.Collection) + it.name
 		label = truncate(label, innerW)
 		if isCursor {
 			return m.th.CursorItem.Width(innerW).Render(label)
@@ -187,6 +186,15 @@ func viewportWindow(cursor, total, rows int) (int, int) {
 		end = total
 	}
 	return start, end
+}
+
+// iconPrefix returns "icon " or "" when the active icon set has no glyph,
+// so ASCII mode doesn't leave a double space.
+func iconPrefix(icon string) string {
+	if icon == "" {
+		return ""
+	}
+	return icon + " "
 }
 
 func truncate(s string, max int) string {

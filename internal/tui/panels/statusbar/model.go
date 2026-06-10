@@ -112,16 +112,14 @@ func flashTimer() tea.Cmd {
 	}
 }
 
+// Flash returns the current transient message (empty when none) and whether
+// it is an error. The app renders it as a floating toast overlay.
+func (m Model) Flash() (string, bool) {
+	return m.flash, m.flashErr
+}
+
 // View renders the full-width status bar.
 func (m Model) View() string {
-	if m.flash != "" {
-		text := m.flash
-		if m.flashErr {
-			text = m.th.ErrText.Render(text)
-		}
-		return m.th.StatusBar.Width(m.width).Render("  " + text)
-	}
-
 	sep := m.th.StatusBar.Render("  ")
 
 	indicator := "◆"

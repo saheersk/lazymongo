@@ -23,6 +23,7 @@ type UIConfig struct {
 	Mouse       bool              `mapstructure:"mouse"        yaml:"mouse,omitempty"`
 	Editor      string            `mapstructure:"editor"       yaml:"editor,omitempty"`
 	PageSize    int               `mapstructure:"pageSize"     yaml:"pageSize,omitempty"`
+	NerdFonts   bool              `mapstructure:"nerdFonts"    yaml:"nerdFonts,omitempty"`
 	Keybindings map[string]string `mapstructure:"keybindings"  yaml:"keybindings,omitempty"`
 }
 
@@ -179,6 +180,7 @@ func setDefaults() {
 	viper.SetDefault("ui.mouse", true)
 	viper.SetDefault("ui.pageSize", 50)
 	viper.SetDefault("ui.editor", "vim")
+	viper.SetDefault("ui.nerdFonts", true)
 }
 
 func configDir() (string, error) {
@@ -204,6 +206,7 @@ ui:
   theme: dark
   mouse: true
   pageSize: 50
+  nerdFonts: true   # set false if your terminal font has no Nerd Font glyphs
   editor: vim   # vim | nvim | nano | emacs | "code --wait"
 `
 	return os.WriteFile(path, []byte(content), 0o600)

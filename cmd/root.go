@@ -9,6 +9,7 @@ import (
 	"github.com/saheersk/lazymongo/internal/config"
 	mongoClient "github.com/saheersk/lazymongo/internal/mongo"
 	"github.com/saheersk/lazymongo/internal/tui"
+	"github.com/saheersk/lazymongo/internal/tui/style"
 	"github.com/spf13/cobra"
 )
 
@@ -62,7 +63,7 @@ func init() {
 	rootCmd.Flags().IntVar(&flagPort, "port", 0, "MongoDB port (default: 27017)")
 	rootCmd.Flags().StringVar(&flagProfile, "profile", "", "Named connection profile from config")
 	rootCmd.Flags().StringVar(&flagSave, "save", "", "Save connection as named profile")
-	rootCmd.Flags().StringVar(&flagTheme, "theme", "", "Color theme (catppuccin, high-contrast, tokyo-night, nord, dracula)")
+	rootCmd.Flags().StringVar(&flagTheme, "theme", "", "Color theme (catppuccin, catppuccin-latte, high-contrast, tokyo-night, nord, dracula)")
 	rootCmd.Flags().BoolVar(&flagUpdate, "update", false, "Update lazymongo to the latest release")
 	rootCmd.Version = fmt.Sprintf("%s (commit %s, built %s)", buildVersion, buildCommit, buildDate)
 }
@@ -110,6 +111,10 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer client.Disconnect()
+
+	if !cfg.UI.NerdFonts {
+		style.SetASCIIIcons()
+	}
 
 	var profiles []tui.ConnectionProfile
 	for _, c := range cfg.Connections {

@@ -62,6 +62,8 @@ func ByName(name string) *Theme {
 		return Nord()
 	case "dracula":
 		return Dracula()
+	case "catppuccin-latte":
+		return Latte()
 	default:
 		return Catppuccin()
 	}
@@ -93,29 +95,29 @@ func Default() *Theme { return Catppuccin() }
 //	Mauve:     #cba6f7  (OIDs)
 func Catppuccin() *Theme {
 	// backgrounds
-	bgCrust  := lipgloss.Color("#11111b") // status bar
+	bgCrust := lipgloss.Color("#11111b")  // status bar
 	bgMantle := lipgloss.Color("#181825") // panel title bar
-	bgSurf0  := lipgloss.Color("#313244") // selected / cursor row
-	bgSurf1  := lipgloss.Color("#24273a") // alt table row (very subtle)
+	bgSurf0 := lipgloss.Color("#313244")  // selected / cursor row
+	bgSurf1 := lipgloss.Color("#24273a")  // alt table row (very subtle)
 
 	// borders
-	borderActive   := lipgloss.Color("#b4befe") // Lavender — bright, clear
+	borderActive := lipgloss.Color("#b4befe")   // Lavender — bright, clear
 	borderInactive := lipgloss.Color("#45475a") // Surface1 — visible but quiet
 
 	// text
-	text    := lipgloss.Color("#cdd6f4") // Text
+	text := lipgloss.Color("#cdd6f4")    // Text
 	textAlt := lipgloss.Color("#a6adc8") // Subtext0
-	dim     := lipgloss.Color("#6c7086") // Overlay1
+	dim := lipgloss.Color("#6c7086")     // Overlay1
 
 	// accent colours
 	lavender := lipgloss.Color("#b4befe")
-	blue     := lipgloss.Color("#89b4fa")
+	blue := lipgloss.Color("#89b4fa")
 	sapphire := lipgloss.Color("#74c7ec")
-	green    := lipgloss.Color("#a6e3a1")
-	yellow   := lipgloss.Color("#f9e2af")
-	peach    := lipgloss.Color("#fab387")
-	maroon   := lipgloss.Color("#eba0ac")
-	mauve    := lipgloss.Color("#cba6f7")
+	green := lipgloss.Color("#a6e3a1")
+	yellow := lipgloss.Color("#f9e2af")
+	peach := lipgloss.Color("#fab387")
+	maroon := lipgloss.Color("#eba0ac")
+	mauve := lipgloss.Color("#cba6f7")
 
 	base := lipgloss.NewStyle()
 
