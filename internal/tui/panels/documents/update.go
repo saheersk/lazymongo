@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,6 +13,74 @@ import (
 	"github.com/saheersk/lazymongo/internal/util"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+// unquotedKeyRe matches unquoted object keys: {name: or , age: → {"name": or , "age":
+var unquotedKeyRe = regexp.MustCompile(`([{,]\s*)(\$?[a-zA-Z_][a-zA-Z0-9_$.]*)(\s*:)`)
+
+// relaxJSON converts Compass-style relaxed JSON (unquoted keys, single-quoted
+// strings) into strict JSON so bson.UnmarshalExtJSON can parse it.
+func relaxJSON(s string) string {
+	// Single-quoted strings → double-quoted.
+	s = strings.ReplaceAll(s, `'`, `"`)
+	// Unquoted object keys → quoted keys.
+	return unquotedKeyRe.ReplaceAllString(s, `${1}"${2}"${3}`)
+}
+
+// queryOperators are the MongoDB query operators offered by Tab completion
+// when the partial token starts with '$'.
+var queryOperators = []string{
+	"$all", "$and", "$elemMatch", "$eq", "$exists", "$expr",
+	"$gt", "$gte", "$in", "$lt", "$lte", "$mod", "$ne", "$nin",
+	"$nor", "$not", "$or", "$regex", "$size", "$text", "$type",
+}
+
+// filterFieldComplete finds the last partial identifier in input and completes
+// it. Tokens starting with '$' complete against MongoDB query operators;
+// anything else completes against the provided field names.
+// Returns (newInput, allMatches).
+func filterFieldComplete(input string, fields []string) (string, []string) {
+	if input == "" {
+		return input, nil
+	}
+	// Find the last delimiter that precedes a potential field token.
+	lastDelim := strings.LastIndexAny(input, `{, "`)
+	partial, prefix := input, ""
+	if lastDelim >= 0 {
+		partial = input[lastDelim+1:]
+		prefix = input[:lastDelim+1]
+	}
+	if partial == "" {
+		return input, nil
+	}
+	candidates := fields
+	if strings.HasPrefix(partial, "$") {
+		candidates = queryOperators
+	}
+	var matches []string
+	for _, f := range candidates {
+		if strings.HasPrefix(f, partial) {
+			matches = append(matches, f)
+		}
+	}
+	if len(matches) == 0 {
+		return input, nil
+	}
+	// If the partial is already an exact match, show the other matches as hints.
+	if len(matches) == 1 && matches[0] == partial {
+		return input, nil
+	}
+	// Longest common prefix of all matches.
+	lcp := matches[0]
+	for _, m := range matches[1:] {
+		for !strings.HasPrefix(m, lcp) {
+			lcp = lcp[:len(lcp)-1]
+		}
+	}
+	if len(lcp) > len(partial) {
+		return prefix + lcp, matches
+	}
+	return input, matches
+}
 
 // Update handles all messages for the documents panel.
 func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
@@ -88,6 +157,7 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.aggMode = true
+		m.aggHistory = pushHistory(m.aggHistory, message.PipelineText, 10)
 		m.docs = message.Docs
 		m.total = int64(len(message.Docs))
 		m.page = 0
@@ -193,6 +263,10 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 	if m.mode != modeNone {
 		return m.handleInputKey(key)
 	}
+	// pipeline picker captures all input
+	if m.aggPick {
+		return m.handleAggPick(key)
+	}
 
 	// esc: clear selection first if any; then exit agg mode
 	if key.String() == "esc" {
@@ -206,6 +280,19 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 			m.docs = nil
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.loadPage(m.page))
+		}
+	}
+
+	// Aggregate results are a read-only snapshot: filtering, sorting and
+	// editing operate on the live collection, so tell the user instead of
+	// silently doing nothing (or worse, mutating data they aren't looking at).
+	if m.aggMode {
+		switch {
+		case isKey(key, m.km.Filter), key.String() == "s", key.String() == "r":
+			return m, statusCmd("filter/sort don't apply to aggregate results — edit $match/$sort in the pipeline (a), or esc to exit")
+		case isKey(key, m.km.NewDoc), isKey(key, m.km.EditDoc), isKey(key, m.km.DeleteDoc),
+			key.String() == "c", key.String() == " ", key.String() == "D":
+			return m, statusCmd("editing is not available on aggregate results — esc to return to the collection")
 		}
 	}
 
@@ -354,6 +441,13 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		if m.db == "" {
 			return m, statusCmd("select a collection first")
 		}
+		// In agg mode 'a' re-edits the current pipeline directly. Otherwise,
+		// when history exists, show a picker of recent pipelines first.
+		if !m.aggMode && len(m.aggHistory) > 0 {
+			m.aggPick = true
+			m.aggPickIdx = 0
+			return m, nil
+		}
 		return m.openAggregateEditor()
 
 	// ── clipboard ────────────────────────────────────────────────────────────
@@ -415,6 +509,8 @@ func (m Model) handleInputKey(key tea.KeyMsg) (Model, tea.Cmd) {
 	case tea.KeyEnter:
 		expr := strings.TrimSpace(m.input.Value())
 		m.filterHistoryCursor = -1
+		m.filterCompletions = nil
+		m.filterCompletionIdx = -1
 		switch m.mode {
 		case modeFilter:
 			return m.commitFilter(expr)
@@ -422,8 +518,38 @@ func (m Model) handleInputKey(key tea.KeyMsg) (Model, tea.Cmd) {
 			return m.commitSort(expr)
 		}
 
+	case tea.KeyTab:
+		if m.mode == modeFilter {
+			if len(m.filterCompletions) == 0 {
+				// First Tab: compute completions and select the first item.
+				_, completions := filterFieldComplete(m.input.Value(), m.columns)
+				if len(completions) > 0 {
+					m.filterCompletions = completions
+					m.filterCompletionIdx = 0
+					m.input.SetValue(m.applyCompletion(completions[0]))
+					m.input.CursorEnd()
+				}
+			} else {
+				// Subsequent Tab: advance selection, cycling through all matches.
+				m.filterCompletionIdx = (m.filterCompletionIdx + 1) % len(m.filterCompletions)
+				m.input.SetValue(m.applyCompletion(m.filterCompletions[m.filterCompletionIdx]))
+				m.input.CursorEnd()
+			}
+			return m, nil
+		}
+
 	case tea.KeyUp:
-		// Only navigate history in filter mode.
+		if m.mode == modeFilter && len(m.filterCompletions) > 0 {
+			// Dropdown is open — navigate upward.
+			m.filterCompletionIdx--
+			if m.filterCompletionIdx < 0 {
+				m.filterCompletionIdx = len(m.filterCompletions) - 1
+			}
+			m.input.SetValue(m.applyCompletion(m.filterCompletions[m.filterCompletionIdx]))
+			m.input.CursorEnd()
+			return m, nil
+		}
+		// Dropdown closed — navigate filter history.
 		if m.mode != modeFilter || len(m.filterHistory) == 0 {
 			break
 		}
@@ -440,6 +566,14 @@ func (m Model) handleInputKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyDown:
+		if m.mode == modeFilter && len(m.filterCompletions) > 0 {
+			// Dropdown is open — navigate downward.
+			m.filterCompletionIdx = (m.filterCompletionIdx + 1) % len(m.filterCompletions)
+			m.input.SetValue(m.applyCompletion(m.filterCompletions[m.filterCompletionIdx]))
+			m.input.CursorEnd()
+			return m, nil
+		}
+		// Dropdown closed — navigate filter history.
 		if m.mode != modeFilter || m.filterHistoryCursor < 0 {
 			break
 		}
@@ -456,6 +590,12 @@ func (m Model) handleInputKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyEsc:
+		// If dropdown open, close it first; second Esc cancels the filter bar.
+		if len(m.filterCompletions) > 0 {
+			m.filterCompletions = nil
+			m.filterCompletionIdx = -1
+			return m, nil
+		}
 		m.mode = modeNone
 		m.inputErr = ""
 		m.filterHistoryCursor = -1
@@ -463,12 +603,16 @@ func (m Model) handleInputKey(key tea.KeyMsg) (Model, tea.Cmd) {
 	case tea.KeyCtrlU:
 		m.input.SetValue("")
 		m.filterHistoryCursor = -1
+		m.filterCompletions = nil
+		m.filterCompletionIdx = -1
 
 	default:
-		// Any character typed detaches from history navigation.
+		// Any character typed closes the dropdown and detaches from history.
 		if m.filterHistoryCursor >= 0 {
 			m.filterHistoryCursor = -1
 		}
+		m.filterCompletions = nil
+		m.filterCompletionIdx = -1
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(key)
 		return m, cmd
@@ -476,14 +620,30 @@ func (m Model) handleInputKey(key tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// applyCompletion replaces the partial word at the end of the current input
+// with the given completion, preserving everything before the last delimiter.
+func (m Model) applyCompletion(completion string) string {
+	input := m.input.Value()
+	lastDelim := strings.LastIndexAny(input, `{, "`)
+	if lastDelim >= 0 {
+		return input[:lastDelim+1] + completion
+	}
+	return completion
+}
+
 func (m Model) commitFilter(expr string) (Model, tea.Cmd) {
+	m.filterCompletions = nil
+	m.filterCompletionIdx = -1
 	if expr == "" {
 		return m.applyFilterSort(nil, m.sort, "", m.sortExpr)
 	}
 	var filter bson.M
 	if err := bson.UnmarshalExtJSON([]byte(expr), false, &filter); err != nil {
-		m.inputErr = "bad JSON: " + err.Error()
-		return m, nil
+		// Try relaxed mode: quote unquoted keys and convert single quotes.
+		if err2 := bson.UnmarshalExtJSON([]byte(relaxJSON(expr)), false, &filter); err2 != nil {
+			m.inputErr = "bad filter: " + err.Error()
+			return m, nil
+		}
 	}
 	m = m.pushFilterHistory(expr)
 	return m.applyFilterSort(filter, m.sort, expr, m.sortExpr)
@@ -491,22 +651,27 @@ func (m Model) commitFilter(expr string) (Model, tea.Cmd) {
 
 const maxFilterHistory = 20
 
-func (m Model) pushFilterHistory(expr string) Model {
-	if expr == "" {
-		return m
+// pushHistory prepends entry to list (newest first), deduplicating any
+// existing occurrence and capping the result at max entries.
+func pushHistory(list []string, entry string, max int) []string {
+	if entry == "" {
+		return list
 	}
-	// Deduplicate: remove existing occurrence of the same expression.
-	filtered := m.filterHistory[:0:len(m.filterHistory)]
-	for _, h := range m.filterHistory {
-		if h != expr {
+	filtered := make([]string, 0, len(list)+1)
+	filtered = append(filtered, entry)
+	for _, h := range list {
+		if h != entry {
 			filtered = append(filtered, h)
 		}
 	}
-	// Prepend newest entry.
-	m.filterHistory = append([]string{expr}, filtered...)
-	if len(m.filterHistory) > maxFilterHistory {
-		m.filterHistory = m.filterHistory[:maxFilterHistory]
+	if len(filtered) > max {
+		filtered = filtered[:max]
 	}
+	return filtered
+}
+
+func (m Model) pushFilterHistory(expr string) Model {
+	m.filterHistory = pushHistory(m.filterHistory, expr, maxFilterHistory)
 	return m
 }
 
@@ -544,10 +709,26 @@ func (m Model) applyFilterSort(filter bson.M, sort bson.D, filterExpr, sortExpr 
 func (m Model) openInput(mode inputMode, prefill string) (Model, tea.Cmd) {
 	m.mode = mode
 	m.inputErr = ""
+	m.filterCompletions = nil
 	m.input.SetValue(prefill)
 	m.input.CursorEnd()
 	m.input.Focus()
 	return m, m.input.Focus()
+}
+
+// BeginFilter opens the filter bar pre-filled with the current filter expression.
+// Used by the app when the user presses "/" from the detail panel.
+func (m Model) BeginFilter() (Model, tea.Cmd) {
+	return m.openInput(modeFilter, m.filterExpr)
+}
+
+// EditDoc opens the given document in the editor for editing.
+// Used when the detail panel requests an edit via msg.EditDocRequested.
+func (m Model) EditDoc(doc bson.M) (Model, tea.Cmd) {
+	if doc == nil {
+		return m, nil
+	}
+	return m.openEditorEdit(doc)
 }
 
 // ── editor ────────────────────────────────────────────────────────────────────
@@ -636,8 +817,48 @@ const aggTemplate = `[
   { "$match": {} }
 ]`
 
+// handleAggPick drives the recent-pipeline picker: ↑/↓/j/k move, enter opens
+// the editor with the chosen pipeline (index 0 = fresh template), esc cancels.
+func (m Model) handleAggPick(key tea.KeyMsg) (Model, tea.Cmd) {
+	total := len(m.aggHistory) + 1 // +1 for "new pipeline"
+	switch key.String() {
+	case "j", "down", "tab":
+		m.aggPickIdx = (m.aggPickIdx + 1) % total
+		return m, nil
+	case "k", "up":
+		m.aggPickIdx--
+		if m.aggPickIdx < 0 {
+			m.aggPickIdx = total - 1
+		}
+		return m, nil
+	case "enter":
+		idx := m.aggPickIdx
+		m.aggPick = false
+		m.aggPickIdx = 0
+		if idx == 0 {
+			return m.openAggregateEditorWith(aggTemplate)
+		}
+		if idx-1 < len(m.aggHistory) {
+			return m.openAggregateEditorWith(m.aggHistory[idx-1])
+		}
+		return m, nil
+	case "esc", "q":
+		m.aggPick = false
+		m.aggPickIdx = 0
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m Model) openAggregateEditor() (Model, tea.Cmd) {
 	content := m.aggPipeline
+	if content == "" {
+		content = aggTemplate
+	}
+	return m.openAggregateEditorWith(content)
+}
+
+func (m Model) openAggregateEditorWith(content string) (Model, tea.Cmd) {
 	if content == "" {
 		content = aggTemplate
 	}

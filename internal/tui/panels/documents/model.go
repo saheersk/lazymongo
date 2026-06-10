@@ -58,14 +58,18 @@ type Model struct {
 	filterExpr string // raw text of the active filter (for display + re-edit)
 	sortExpr   string // raw text of the active sort   (for display + re-edit)
 
-	mode      inputMode
-	input     textinput.Model
-	inputErr  string
+	mode     inputMode
+	input    textinput.Model
+	inputErr string
 
 	// filter history — ↑/↓ in the filter bar navigates recent expressions
 	filterHistory       []string // newest first, max 20
 	filterHistoryCursor int      // -1 = editing fresh input, 0+ = navigating
 	filterHistoryDraft  string   // input saved before navigation began
+
+	// filter field-name autocomplete — populated when Tab is pressed
+	filterCompletions   []string
+	filterCompletionIdx int // -1 = none selected; 0+ = highlighted row in dropdown
 
 	// multi-select — space toggles, D bulk-deletes
 	selectedIDs map[string]interface{} // FormatValue(_id) → raw _id
@@ -75,6 +79,11 @@ type Model struct {
 
 	aggMode     bool   // true → showing aggregate results, not the live collection
 	aggPipeline string // raw pipeline text used in the last aggregate run
+
+	// pipeline history — 'a' with history shows a picker before the editor
+	aggHistory []string // newest first, max 10
+	aggPick    bool     // picker dropdown open
+	aggPickIdx int      // 0 = "new pipeline", 1+ = history entries
 
 	focused       bool
 	loading       bool
@@ -127,6 +136,7 @@ func New(th *style.Theme, km *keymap.Map,
 		spinner:             sp,
 		input:               ti,
 		filterHistoryCursor: -1,
+		filterCompletionIdx: -1,
 		selectedIDs:         map[string]interface{}{},
 		th:                  th,
 		km:                  km,
@@ -146,7 +156,7 @@ func (m Model) SetEditor(e string) Model {
 // this to bypass global key handlers so keystrokes like q, h, esc don't
 // accidentally trigger navigation while the user is interacting.
 func (m Model) InInputMode() bool {
-	return m.mode != modeNone || m.deleteConfirm || m.bulkDeleteConfirm
+	return m.mode != modeNone || m.deleteConfirm || m.bulkDeleteConfirm || m.aggPick
 }
 
 // SelectionCount returns how many documents are currently marked for bulk ops.

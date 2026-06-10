@@ -63,6 +63,18 @@ func (m Model) handleKey(key tea.KeyMsg) (Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 
+	case key.String() == "e":
+		// Open the current document in the editor.
+		if m.doc != nil {
+			doc := m.doc
+			return m, func() tea.Msg { return msg.EditDocRequested{Doc: doc} }
+		}
+		return m, nil
+
+	case key.String() == "/":
+		// Ask the app to open the filter bar in the documents panel.
+		return m, func() tea.Msg { return msg.OpenFilter{} }
+
 	case key.String() == "y":
 		// copy _id to clipboard
 		if m.docID != "" {

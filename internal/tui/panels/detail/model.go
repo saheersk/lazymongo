@@ -16,6 +16,8 @@ type Model struct {
 	docID   string // extracted _id string for copy
 	rawJSON string // uncoloured JSON, used for clipboard copy
 
+	filterExpr string // active filter from the documents panel (for display)
+
 	viewport viewport.Model
 	ready    bool
 	focused  bool
@@ -43,12 +45,18 @@ func (m Model) SetSize(w, h int) Model {
 	innerW := w - 4 // 2 border + 2 padding
 	innerH := h - 4 // 2 border + 1 title + 1 blank
 
+	// Reserve a 2-column gutter on the right for the scrollbar track.
+	vpW := innerW - 2
+	if vpW < 1 {
+		vpW = 1
+	}
+
 	if !m.ready {
-		m.viewport = viewport.New(innerW, innerH)
+		m.viewport = viewport.New(vpW, innerH)
 		m.viewport.YPosition = 0
 		m.ready = true
 	} else {
-		m.viewport.Width = innerW
+		m.viewport.Width = vpW
 		m.viewport.Height = innerH
 	}
 
@@ -62,6 +70,12 @@ func (m Model) SetSize(w, h int) Model {
 // SetFocused controls focused-border rendering.
 func (m Model) SetFocused(f bool) Model {
 	m.focused = f
+	return m
+}
+
+// SetFilterExpr stores the active filter expression for display in the header.
+func (m Model) SetFilterExpr(expr string) Model {
+	m.filterExpr = expr
 	return m
 }
 

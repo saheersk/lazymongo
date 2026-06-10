@@ -111,12 +111,13 @@ type IndexesLoaded struct {
 }
 
 // IndexEditorDone is returned by the ExecProcess callback after the
-// user edits an index definition file.
+// user edits an index definition file. TTLSeconds < 0 means no TTL.
 type IndexEditorDone struct {
-	Keys   bson.D
-	Unique bool
-	Sparse bool
-	Err    error
+	Keys       bson.D
+	Unique     bool
+	Sparse     bool
+	TTLSeconds int32
+	Err        error
 }
 
 // IndexCreated confirms a successful index creation.
@@ -214,6 +215,16 @@ type CollectionRenamed struct {
 	OldCol string
 	NewCol string
 	Err    error
+}
+
+// OpenFilter is emitted when another panel (e.g. the detail view) wants the
+// document list to open its filter bar.
+type OpenFilter struct{}
+
+// EditDocRequested is emitted by the detail panel when the user presses 'e'
+// to open the currently displayed document in the editor.
+type EditDocRequested struct {
+	Doc bson.M
 }
 
 // ---- status / error ----
