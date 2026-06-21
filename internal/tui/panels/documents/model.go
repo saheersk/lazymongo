@@ -230,6 +230,14 @@ func (m Model) PageInfo() (page, total int, docCount int64) {
 }
 
 func (m Model) pageCount() int {
+	// total < 0 means the count timed out (huge collection). Allow paging
+	// forward whenever the current page is full — there may be more.
+	if m.total < 0 {
+		if len(m.docs) == m.pageSize {
+			return m.page + 2
+		}
+		return m.page + 1
+	}
 	if m.total == 0 {
 		return 1
 	}

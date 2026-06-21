@@ -30,7 +30,11 @@ func (m Model) renderInner() string {
 		title = m.db + " > " + m.collection + "  INDEXES"
 	}
 	if m.stats.IndexCount > 0 {
-		title += fmt.Sprintf("  (%d docs, %d idx)", m.stats.DocCount, m.stats.IndexCount)
+		docs := "?"
+		if m.stats.DocCount >= 0 {
+			docs = fmt.Sprintf("%d", m.stats.DocCount)
+		}
+		title += fmt.Sprintf("  (%s docs, %d idx)", docs, m.stats.IndexCount)
 	}
 
 	header := m.th.PanelTitle.

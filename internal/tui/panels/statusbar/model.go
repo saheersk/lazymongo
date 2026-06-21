@@ -75,8 +75,10 @@ func (m Model) Update(message tea.Msg) (Model, tea.Cmd) {
 			m.page = message.Result.Page
 			m.durationMs = message.Result.DurationMs
 			ps := message.Result.PageSize
-			if ps > 0 {
+			if ps > 0 && m.total >= 0 {
 				m.pageCount = int(m.total)/ps + 1
+			} else {
+				m.pageCount = 0
 			}
 		}
 
@@ -151,6 +153,13 @@ func (m Model) View() string {
 	var right string
 	if m.total > 0 {
 		pagerText := fmt.Sprintf("%d docs  pg %d/%d", m.total, m.page+1, m.pageCount)
+		if m.durationMs > 0 {
+			pagerText += fmt.Sprintf("  %dms", m.durationMs)
+		}
+		right = m.th.StatusPager.Render(pagerText + "  ")
+	} else if m.total < 0 && m.collection != "" {
+		// Count timed out on a huge collection — total unknown.
+		pagerText := fmt.Sprintf("? docs  pg %d", m.page+1)
 		if m.durationMs > 0 {
 			pagerText += fmt.Sprintf("  %dms", m.durationMs)
 		}

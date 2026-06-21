@@ -52,9 +52,12 @@ func (c *Client) ListIndexesAndStats(dbName, colName string) ([]msg.IndexInfo, m
 		infos = append(infos, info)
 	}
 
-	count, err := col.CountDocuments(ctx, bson.D{})
+	// Metadata-based count: instant even on huge collections. An exact
+	// CountDocuments here can blow the operation timeout on millions of
+	// docs and would needlessly fail the index list with it.
+	count, err := col.EstimatedDocumentCount(ctx)
 	if err != nil {
-		return infos, msg.CollectionStats{}, err
+		count = -1
 	}
 
 	stats := msg.CollectionStats{

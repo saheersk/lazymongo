@@ -1,6 +1,7 @@
 package mongo
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/saheersk/lazymongo/internal/tui/msg"
@@ -47,19 +48,28 @@ func (c *Client) RenameCollection(dbName, oldCol, newCol string) error {
 
 // CollectionStats retrieves statistics for a collection.
 // It uses the collStats command (works on MongoDB 3.x–7.x) and falls back to
-// the $collStats aggregation pipeline on error. Document count always comes
-// from CountDocuments for accuracy.
+// the $collStats aggregation pipeline on error. Document count prefers the
+// accurate CountDocuments, but on huge collections that can outlast the
+// operation timeout, so it gets a short deadline of its own and falls back
+// to the metadata count reported by collStats.
 func (c *Client) CollectionStats(dbName, colName string) (msg.CollectionStatsDetail, error) {
 	ctx, cancel := opCtx()
 	defer cancel()
 
-	// CountDocuments is always accurate regardless of storage engine.
-	count, _ := c.inner.Database(dbName).Collection(colName).CountDocuments(ctx, bson.D{})
+	countCtx, cancelCount := context.WithTimeout(context.Background(), countTimeout)
+	count, countErr := c.inner.Database(dbName).Collection(colName).CountDocuments(countCtx, bson.D{})
+	cancelCount()
+	if countErr != nil {
+		count = -1
+	}
 
 	// Try the collStats command first — top-level fields, no nested-doc decoding issue.
 	var raw bson.M
 	res := c.inner.Database(dbName).RunCommand(ctx, bson.D{{Key: "collStats", Value: colName}})
 	if err := res.Decode(&raw); err == nil {
+		if count < 0 {
+			count = toInt64(raw["count"])
+		}
 		return msg.CollectionStatsDetail{
 			DocCount:    count,
 			TotalSize:   toInt64(raw["size"]),
@@ -92,6 +102,9 @@ func (c *Client) CollectionStats(dbName, colName string) (msg.CollectionStatsDet
 		return msg.CollectionStatsDetail{DocCount: count}, nil
 	}
 
+	if count < 0 {
+		count = toInt64(ss["count"])
+	}
 	return msg.CollectionStatsDetail{
 		DocCount:    count,
 		TotalSize:   toInt64(ss["size"]),

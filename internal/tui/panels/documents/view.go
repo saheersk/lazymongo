@@ -472,6 +472,11 @@ func (m Model) cellStyle(v interface{}, rowStyle lipgloss.Style) lipgloss.Style 
 func (m Model) renderPager() string {
 	from := m.page*m.pageSize + 1
 	to := from + len(m.docs) - 1
+	if m.total < 0 {
+		info := fmt.Sprintf("  %d-%d of ?  •  pg %d  •  %d/pg",
+			from, to, m.page+1, m.pageSize)
+		return m.th.StatusPager.Render(info)
+	}
 	info := fmt.Sprintf("  %d-%d of %d  •  pg %d/%d  •  %d/pg",
 		from, to, m.total, m.page+1, m.pageCount(), m.pageSize)
 	return m.th.StatusPager.Render(info)

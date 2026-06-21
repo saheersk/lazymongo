@@ -2332,8 +2332,12 @@ func renderColStats(base string, w, h int, th *style.Theme, db, col string, load
 			l := fmt.Sprintf("  %-*s", kw, label)
 			return th.HelpKey.Render(l) + "  " + th.HelpDesc.Render(value)
 		}
+		docCount := "?"
+		if data.DocCount >= 0 {
+			docCount = fmt.Sprintf("%d", data.DocCount)
+		}
 		rows = append(rows,
-			stat("Documents:", fmt.Sprintf("%d", data.DocCount)),
+			stat("Documents:", docCount),
 			stat("Avg doc size:", fmt.Sprintf("%.0f B", data.AvgDocSize)),
 			stat("Total size:", formatBytes(data.TotalSize)),
 			stat("Storage size:", formatBytes(data.StorageSize)),

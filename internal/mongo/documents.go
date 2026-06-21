@@ -1,20 +1,49 @@
 package mongo
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/saheersk/lazymongo/internal/tui/msg"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	driver "go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+// countTimeout caps the best-effort total count. On large collections an
+// exact filtered count can take far longer than fetching the page itself,
+// so it gets its own short deadline instead of sharing operationTimeout.
+const countTimeout = 5 * time.Second
+
+// countTotal returns the number of documents matching filter, or -1 when the
+// count fails or times out ("unknown"). An empty filter uses the metadata-based
+// EstimatedDocumentCount so opening a huge collection never waits on a scan.
+func countTotal(col *driver.Collection, filter bson.M) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), countTimeout)
+	defer cancel()
+
+	var (
+		n   int64
+		err error
+	)
+	if len(filter) == 0 {
+		n, err = col.EstimatedDocumentCount(ctx)
+	} else {
+		n, err = col.CountDocuments(ctx, filter)
+	}
+	if err != nil {
+		return -1
+	}
+	return n
+}
 
 // QueryOptions parameterises a Find call.
 type QueryOptions struct {
 	Filter     bson.M
 	Sort       bson.D
 	Projection bson.M
-	Page       int  // 0-indexed
+	Page       int // 0-indexed
 	PageSize   int
 }
 
@@ -33,10 +62,10 @@ func (c *Client) FindPage(dbName, colName string, q QueryOptions) (msg.PageResul
 
 	col := c.inner.Database(dbName).Collection(colName)
 
-	total, err := col.CountDocuments(ctx, q.Filter)
-	if err != nil {
-		return msg.PageResult{}, fmt.Errorf("count: %w", err)
-	}
+	// Count concurrently with the page fetch; a slow or timed-out count
+	// degrades to Total = -1 rather than failing the whole page load.
+	countCh := make(chan int64, 1)
+	go func() { countCh <- countTotal(col, q.Filter) }()
 
 	skip := int64(q.Page * q.PageSize)
 	limit := int64(q.PageSize)
@@ -65,7 +94,7 @@ func (c *Client) FindPage(dbName, colName string, q QueryOptions) (msg.PageResul
 
 	return msg.PageResult{
 		Docs:       docs,
-		Total:      total,
+		Total:      <-countCh,
 		Page:       q.Page,
 		PageSize:   q.PageSize,
 		DurationMs: time.Since(start).Milliseconds(),
